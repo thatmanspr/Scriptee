@@ -1,0 +1,149 @@
+# Scriptee config
+# Location: ~/.config/scriptee/config.toml
+# This file is created automatically on first run with these defaults.
+# Edit it, save, and relaunch scriptee.
+
+[general]
+save_dir = "~/Documents/Scriptee"
+# Stamp each scene's number in the left/right PDF margins on :pdf export,
+# matching the numbers already shown in the editor's left gutter. Set to
+# false for a clean draft PDF with no margin numbers.
+pdf_scene_numbers = true
+# If a script has no title page at all (e.g. imported from a Fountain file
+# that never had one) and you hit :pdf, ask once for the same fields [n]ew
+# screenplays get -- otherwise the export silently has no cover page. Set
+# to false to never ask and just export without one.
+prompt_missing_titlepage = true
+
+[prompts]
+# Fields asked when creating a new screenplay. Add, remove, reorder freely.
+# Any field left blank when prompted is simply skipped.
+fields = ["Title", "Author", "Genre", "Year", "Contact (Number)", "Contact (Email)"]
+
+[behavior]
+# Seconds of dirty (unsaved), idle-tolerant editing between autosave
+# snapshots to the crash-recovery slot. Never touches your real file.
+autosave_interval_secs = 15
+# How many undo/redo steps are kept on the flat undo stack.
+max_undo_steps = 50
+# How many paths the "recent files" list at [o]pen remembers.
+max_recent_files = 15
+# ncurses ESCDELAY in milliseconds -- how long a lone Esc byte waits before
+# scriptee treats it as a real Esc rather than the start of a longer escape
+# sequence (arrow keys etc.). Kept low so Esc feels instant; raise it only
+# if your terminal/multiplexer needs more time.
+esc_delay_ms = 25
+
+[keybinds]
+# Command-mode line-type setters, e.g. typing ":h<Enter>" sets the
+# current line to a scene heading. Change the letters to remap them.
+heading = "h"
+action = "a"
+character = "c"
+dialogue = "d"
+parenthetical = "p"
+shot = "s"
+transition = "t"
+
+# Bare NORMAL-mode keys (pressed without a leading ":"). These can safely
+# share a letter with a line-type setter above -- "a" here is "append
+# after cursor", unrelated to ":a" setting the current line to ACTION --
+# since one only applies bare in NORMAL mode and the other only after ":".
+insert_before = "i"      # enter INSERT at the cursor
+insert_after = "a"       # enter INSERT just past the cursor
+open_below = "o"         # open a new line below, enter INSERT
+open_above = "O"         # open a new line above, enter INSERT
+move_left = "h"
+move_down = "j"
+move_up = "k"
+move_right = "l"
+delete_char = "x"
+delete_line = "d"        # pressed twice, vim-style ("dd")
+undo = "u"
+redo = "r"               # held with Ctrl automatically -- i.e. Ctrl-r
+search = "/"
+next_match = "n"
+command = ":"
+repeat = "."              # re-run the last ":" command
+jump_end = "G"            # bare G: jump to last line; "<N>G": jump to scene N
+toggle_readonly = "e"     # unlock a file opened read-only from the shell
+dual_dialogue = "D"       # mark/unmark current CHARACTER as dual dialogue
+
+[colors]
+# Any of: black, red, green, yellow, blue, magenta, cyan, white, default
+heading       = "yellow"
+character     = "cyan"
+dialogue      = "white"
+transition    = "magenta"
+action        = "white"
+shot          = "green"
+parenthetical = "white"
+accent        = "blue"
+
+[transitions]
+# Un-forced transition text (no leading ">") recognized when importing a
+# .fountain file and offered by Tab-complete on TRANSITION lines. Add your
+# own house-style transitions here, e.g. "WIPE TO:".
+builtins = ["CUT TO:", "FADE OUT.", "FADE IN:", "DISSOLVE TO:", "SMASH CUT TO:"]
+
+[format]
+# Terminal column widths (characters) and left-indents (columns) per
+# element. These are independent of [format.pdf]'s margins below, not
+# derived from them -- change wrap_width.action and left_edge_in together
+# if you want the terminal view and the exported PDF to keep agreeing on
+# where lines wrap (they're only in lockstep by default, not by formula).
+
+[format.wrap_width]
+heading       = 60
+action        = 60
+shot          = 60
+character     = 40
+parenthetical = 32
+dialogue      = 40
+transition    = 74
+
+[format.indent]
+heading       = 0
+action        = 0
+shot          = 0
+character     = 22
+parenthetical = 18
+dialogue      = 10
+# transition has no indent -- it's right-aligned instead.
+
+[format.pdf]
+font_size = 12
+page_size = "letter"       # "letter" or "a4"
+# "courier" uses the PDF spec's built-in base-14 Courier family -- zero
+# embedding, renders identically in every viewer. Set to "custom" and
+# fill in [format.pdf.custom_font] below to embed your own .ttf instead
+# (e.g. Courier Prime). A bad/missing path falls back to Courier
+# automatically, with a note on the :pdf status line.
+font_family = "courier"
+left_edge_in = 1.5         # heading / action / shot start column
+dialogue_left_in = 2.5
+parenthetical_left_in = 2.8
+character_left_in = 3.5
+right_margin_in = 1.0
+top_margin_in = 1.0
+bottom_margin_in = 1.0
+# Gap between the two columns when printing dual (simultaneous) dialogue.
+dual_dialogue_gutter_in = 0.3
+
+[format.pdf.emphasis]
+# Which elements are force-styled on :pdf export, regardless of any inline
+# **bold**/*italic* markup (or lack of it) you typed. These are the
+# standard screenplay-format conventions; turn any of them off if your
+# house style differs. ACTION and DIALOGUE are never force-styled either
+# way -- they only ever get bold/italic from **/* markers you actually type.
+heading_bold          = true
+character_bold        = true
+transition_bold       = true
+parenthetical_italic  = true
+
+[format.pdf.custom_font]
+# Absolute .ttf paths, only used when font_family = "custom" above.
+# bold/italic are optional and fall back to regular if left blank.
+regular = ""
+bold = ""
+italic = ""
