@@ -2,6 +2,8 @@
 
 A vim-motion TUI screenwriter for Linux.
 
+Scriptee obliges with suckless UNIX philosophy. Do only one thing, and do it right.
+
 ## Install (any Linux distro)
 
 ```bash
