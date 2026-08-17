@@ -460,6 +460,153 @@ def test_cursor_position_empty_line_is_col_zero():
 
 
 # --------------------------------------------------------------------------
+# raw_cx_for_visual -- the inverse of cursor_position(), used by
+# Editor._move_visual_row() so j/k/arrow-key navigation can land on a
+# specific wrapped row of a multi-row element.
+# --------------------------------------------------------------------------
+
+def test_raw_cx_for_visual_round_trips_through_cursor_position():
+    """For realistic (single-spaced) screenplay text, cursor_position()
+    then raw_cx_for_visual() then cursor_position() again should land on
+    the exact same (row, col) -- i.e. the inverse actually inverts, across
+    every cursor position in a line that wraps to multiple rows, styled
+    spans included."""
+    lines = [
+        {"type": "action",
+         "text": "He picks up the *photo frame* and just **stares** at "
+                 "it for a long long long time indeed."},
+        {"type": "dialogue",
+         "text": "Nuvvu ela unnav ra, chala rojula tarvatha kalisaam, "
+                 "em jarigindi cheppu na."},
+        {"type": "heading",
+         "text": "int. some very long and elaborate location description "
+                 "- continuous day and night"},
+    ]
+    for line in lines:
+        width = s.WRAP_WIDTH.get(line["type"], 60)
+        for cx in range(0, len(line["text"]) + 1):
+            row, col = s.cursor_position(line, width, cx)
+            back_cx = s.raw_cx_for_visual(line, width, row, col)
+            assert s.cursor_position(line, width, back_cx) == (row, col), \
+                (line["text"], cx)
+
+
+def test_raw_cx_for_visual_clamps_out_of_range_row_and_col():
+    line = {"type": "action", "text": "a fairly short line"}
+    width = s.WRAP_WIDTH["action"]
+    # Only one row -- an out-of-range row/col should clamp, not explode.
+    assert s.raw_cx_for_visual(line, width, 5, 0) == s.raw_cx_for_visual(line, width, 0, 0)
+    assert s.raw_cx_for_visual(line, width, 0, 999) == len(line["text"])
+
+
+# --------------------------------------------------------------------------
+# Editor._move_visual_row() -- j/k and the arrow keys move by *wrapped*
+# row, not straight to the next logical buffer element, so a two-row
+# ACTION/DIALOGUE/etc. line's second row is a real landing spot.
+# --------------------------------------------------------------------------
+
+def test_move_visual_row_down_stays_on_second_row_of_wrapped_action():
+    long_action = ("word " * 30).strip()  # wraps to multiple rows at width 60
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": long_action},
+        {"type": "character", "text": "VIKRANTH"},
+        {"type": "dialogue", "text": "Parledu ra."},
+    ])
+    width = s.WRAP_WIDTH["action"]
+    assert len(s.wrapped_lines_for(ed.buffer[0], width)) > 1
+    ed.cy, ed.cx = 0, 0
+    ed._move_visual_row(1)
+    assert ed.cy == 0  # still the same logical (ACTION) line
+    row, col = s.cursor_position(ed.buffer[0], width, ed.cx)
+    assert (row, col) == (1, 0)  # first word of the second wrapped row
+
+
+def test_move_visual_row_down_crosses_into_next_line_from_last_row():
+    long_action = ("word " * 30).strip()
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": long_action},
+        {"type": "character", "text": "VIKRANTH"},
+    ])
+    width = s.WRAP_WIDTH["action"]
+    n_rows = len(s.wrapped_lines_for(ed.buffer[0], width))
+    ed.cy = 0
+    ed.cx = s.raw_cx_for_visual(ed.buffer[0], width, n_rows - 1, 0)
+    ed._move_visual_row(1)
+    assert ed.cy == 1
+    assert ed.buffer[ed.cy]["type"] == "character"
+
+
+def test_move_visual_row_up_lands_on_last_row_of_previous_wrapped_line():
+    long_action = ("word " * 30).strip()
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": long_action},
+        {"type": "character", "text": "VIKRANTH"},
+    ])
+    width = s.WRAP_WIDTH["action"]
+    n_rows = len(s.wrapped_lines_for(ed.buffer[0], width))
+    ed.cy, ed.cx = 1, 0
+    ed._move_visual_row(-1)
+    assert ed.cy == 0
+    row, _col = s.cursor_position(ed.buffer[0], width, ed.cx)
+    assert row == n_rows - 1
+
+
+def test_move_visual_row_preserves_column_across_ragged_rows():
+    """Column position (not raw char count) is what's preserved -- moving
+    down/up should land at roughly the same on-screen column, clamped to
+    whatever that row's own length allows."""
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": ("word " * 30).strip()},
+        {"type": "action", "text": "short"},
+    ])
+    width = s.WRAP_WIDTH["action"]
+    n_rows = len(s.wrapped_lines_for(ed.buffer[0], width))
+    ed.cy = 0
+    ed.cx = s.raw_cx_for_visual(ed.buffer[0], width, n_rows - 1, 3)
+    ed._move_visual_row(1)  # crosses into the short second line
+    assert ed.cy == 1
+    assert ed.cx <= len(ed.buffer[1]["text"])
+
+
+def test_move_visual_row_top_and_bottom_of_document_are_safe():
+    ed = _make_editor(buffer=[{"type": "action", "text": "only line"}])
+    ed.cy, ed.cx = 0, 3
+    ed._move_visual_row(-1)
+    assert (ed.cy, ed.cx) == (0, 3)  # no previous row/line -- no-op
+    ed._move_visual_row(1)
+    assert (ed.cy, ed.cx) == (0, 3)  # no next row/line -- no-op
+
+
+def test_normal_mode_j_k_use_visual_row_movement():
+    long_action = ("word " * 30).strip()
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": long_action},
+        {"type": "character", "text": "VIKRANTH"},
+    ])
+    ed.cy, ed.cx = 0, 0
+    ed.handle_normal(ord("j"))  # default move_down keybind
+    assert ed.cy == 0  # stayed inside the wrapped ACTION line
+    width = s.WRAP_WIDTH["action"]
+    row, _col = s.cursor_position(ed.buffer[0], width, ed.cx)
+    assert row == 1
+
+
+def test_insert_mode_arrow_keys_use_visual_row_movement():
+    long_action = ("word " * 30).strip()
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": long_action},
+        {"type": "character", "text": "VIKRANTH"},
+    ])
+    ed.cy, ed.cx = 0, 0
+    ed.mode = "INSERT"
+    ed.handle_insert(curses.KEY_DOWN)
+    assert ed.cy == 0
+    width = s.WRAP_WIDTH["action"]
+    row, _col = s.cursor_position(ed.buffer[0], width, ed.cx)
+    assert row == 1
+
+
+# --------------------------------------------------------------------------
 # Config merge
 # --------------------------------------------------------------------------
 
@@ -1946,6 +2093,532 @@ def test_pdf_scene_numbers_are_not_duplicated(tmp_path):
     assert tokens.count("1") == 1
 
 
+# --------------------------------------------------------------------------
+# Scoped PDF export -- ":pdf 1-10", ":pdf 5", ":pdf char NAME" -- sides for
+# a scene range or for every scene a given character appears in.
+# --------------------------------------------------------------------------
+
+_SIDES_BUFFER = [
+    {"type": "heading", "text": "INT. KITCHEN - DAY"},               # scene 1
+    {"type": "character", "text": "VIKRANTH"},
+    {"type": "dialogue", "text": "Parledu ra."},
+    {"type": "heading", "text": "EXT. STREET - NIGHT"},              # scene 2
+    {"type": "action", "text": "Rishitha walks alone in the rain."},
+    {"type": "heading", "text": "INT. GARAGE - CONTINUOUS"},         # scene 3
+    {"type": "action", "text": "Vikranth fixes the old bike."},
+    {"type": "heading", "text": "INT. OFFICE - DAY"},                # scene 4
+    {"type": "character", "text": "RISHITHA"},
+    {"type": "dialogue", "text": "Nenu osthanu."},
+]
+
+
+def test_scene_bounds_splits_buffer_at_each_heading():
+    bounds = s.scene_bounds(_SIDES_BUFFER)
+    assert bounds == [(0, 3), (3, 5), (5, 7), (7, 10)]
+
+
+def test_scenes_matching_character_finds_dialogue_cue():
+    assert s.scenes_matching_character(_SIDES_BUFFER, "vikranth") == {1, 3}
+    assert s.scenes_matching_character(_SIDES_BUFFER, "RISHITHA") == {2, 4}
+
+
+def test_scenes_matching_character_checks_action_prose_too():
+    """A character can appear (be mentioned/act) in a scene with no
+    dialogue of their own -- scene 2 and 3 both mention names only in
+    ACTION text, not a CHARACTER cue."""
+    assert 2 in s.scenes_matching_character(_SIDES_BUFFER, "Rishitha")
+    assert 3 in s.scenes_matching_character(_SIDES_BUFFER, "Vikranth")
+
+
+def test_scenes_matching_character_is_whole_word_only():
+    buffer = [
+        {"type": "heading", "text": "INT. ROOM - DAY"},
+        {"type": "action", "text": "ALEX always arrives late."},
+    ]
+    # "AL" should not match inside "ALEX" or "ALWAYS".
+    assert s.scenes_matching_character(buffer, "AL") == set()
+    assert s.scenes_matching_character(buffer, "ALEX") == {1}
+
+
+def test_scenes_matching_character_no_match_returns_empty_set():
+    assert s.scenes_matching_character(_SIDES_BUFFER, "NOBODY") == set()
+
+
+# -- dialogue scanning (mentioned by another character, not just cue/action) --
+
+_DIALOGUE_MENTION_BUFFER = [
+    {"type": "heading", "text": "INT. KITCHEN - DAY"},                # scene 1
+    {"type": "character", "text": "PRIYA"},
+    {"type": "dialogue", "text": "danny left an hour ago."},
+    {"type": "heading", "text": "EXT. STREET - NIGHT"},               # scene 2
+    {"type": "character", "text": "PRIYA"},
+    {"type": "dialogue", "text": "I haven't seen DANNY all day."},
+    {"type": "heading", "text": "INT. GARAGE - CONTINUOUS"},          # scene 3
+    {"type": "character", "text": "PRIYA"},
+    {"type": "dialogue", "text": "Nobody here but us."},
+]
+
+
+def test_scenes_matching_character_finds_name_in_other_characters_dialogue():
+    """DANNY never has a cue or ACTION mention of their own here -- only
+    PRIYA says the name, lowercase in scene 1 and mixed/upper in scene 2.
+    Dialogue scanning is on by default, so both scenes must be found and
+    scene 3 (no mention at all) must not be."""
+    matches = s.scenes_matching_character(_DIALOGUE_MENTION_BUFFER, "Danny")
+    assert matches == {1, 2}
+
+
+def test_scenes_matching_character_dialogue_scan_is_configurable_off():
+    cfg = copy.deepcopy(s.DEFAULT_CONFIG)
+    cfg["character_export"]["search_in"] = ["action"]
+    matches = s.scenes_matching_character(_DIALOGUE_MENTION_BUFFER, "Danny", cfg)
+    assert matches == set()
+
+
+def test_scenes_matching_character_search_in_defaults_when_cfg_missing_section():
+    # A cfg dict that simply doesn't have "character_export" (e.g. an old
+    # config.toml on disk from before this feature existed) must still
+    # search dialogue, matching the documented default.
+    cfg = {"general": {}}
+    matches = s.scenes_matching_character(_DIALOGUE_MENTION_BUFFER, "Danny", cfg)
+    assert matches == {1, 2}
+
+
+# -- aliases --
+
+_ALIAS_BUFFER = [
+    {"type": "heading", "text": "INT. KITCHEN - DAY"},                # scene 1
+    {"type": "character", "text": "DANNY"},
+    {"type": "dialogue", "text": "I'm making breakfast."},
+    {"type": "heading", "text": "EXT. STREET - NIGHT"},               # scene 2
+    {"type": "character", "text": "PRIYA"},
+    {"type": "dialogue", "text": "Have you seen Dan anywhere?"},
+    {"type": "heading", "text": "INT. GARAGE - CONTINUOUS"},          # scene 3
+    {"type": "action", "text": "A DANFORTH sign hangs on the wall."},
+]
+
+
+def _cfg_with_alias(name, aliases):
+    cfg = copy.deepcopy(s.DEFAULT_CONFIG)
+    cfg["character_export"]["aliases"] = {name: aliases}
+    return cfg
+
+
+def test_scenes_matching_character_alias_pulls_in_nickname_scenes():
+    cfg = _cfg_with_alias("DANNY", ["Dan"])
+    assert s.scenes_matching_character(_ALIAS_BUFFER, "Danny", cfg) == {1, 2}
+
+
+def test_scenes_matching_character_alias_lookup_by_alias_name_too():
+    """Querying by the alias itself (":pdf char Dan") should pull in the
+    same scenes as querying by the canonical name."""
+    cfg = _cfg_with_alias("DANNY", ["Dan"])
+    assert s.scenes_matching_character(_ALIAS_BUFFER, "Dan", cfg) == {1, 2}
+
+
+def test_scenes_matching_character_alias_is_whole_word_only():
+    """"Dan" must not match inside "DANFORTH" in scene 3."""
+    cfg = _cfg_with_alias("DANNY", ["Dan"])
+    assert 3 not in s.scenes_matching_character(_ALIAS_BUFFER, "Danny", cfg)
+
+
+def test_scenes_matching_character_no_aliases_by_default():
+    matches = s.scenes_matching_character(_ALIAS_BUFFER, "Danny")
+    assert matches == {1}  # scene 2's "Dan" isn't linked without an alias
+
+
+def test_character_export_settings_defaults_and_overrides():
+    search_in, aliases = s.character_export_settings(None)
+    assert search_in == {"action", "dialogue"}
+    assert aliases == {}
+
+    cfg = _cfg_with_alias("DANNY", ["Dan", "Danno"])
+    search_in, aliases = s.character_export_settings(cfg)
+    assert aliases == {"DANNY": ["Dan", "Danno"]}
+
+
+def test_names_for_character_case_insensitive_key_match():
+    aliases = {"danny": ["Dan"]}
+    assert s.names_for_character("DANNY", aliases) == {"DANNY", "DAN"}
+    assert s.names_for_character("Priya", aliases) == {"PRIYA"}
+
+
+def test_buffer_for_scenes_keeps_only_requested_scenes_in_order():
+    out = s.buffer_for_scenes(_SIDES_BUFFER, {3, 1})
+    types_and_text = [(l["type"], l["text"]) for l in out]
+    assert types_and_text == [
+        ("heading", "INT. KITCHEN - DAY"),
+        ("character", "VIKRANTH"),
+        ("dialogue", "Parledu ra."),
+        ("heading", "INT. GARAGE - CONTINUOUS"),
+        ("action", "Vikranth fixes the old bike."),
+    ]
+
+
+def test_buffer_for_scenes_tags_original_scene_number():
+    out = s.buffer_for_scenes(_SIDES_BUFFER, {3})
+    heading = out[0]
+    assert heading["type"] == "heading"
+    assert heading["_export_scene_no"] == 3
+
+
+def test_buffer_for_scenes_does_not_mutate_original_buffer():
+    original = copy.deepcopy(_SIDES_BUFFER)
+    s.buffer_for_scenes(_SIDES_BUFFER, {1})
+    assert _SIDES_BUFFER == original
+
+
+def test_buffer_for_scenes_ignores_out_of_range_numbers():
+    out = s.buffer_for_scenes(_SIDES_BUFFER, {1, 99})
+    assert [l["text"] for l in out if l["type"] == "heading"] == ["INT. KITCHEN - DAY"]
+
+
+def test_parse_pdf_scope_plain_arg_is_a_path():
+    assert s.parse_pdf_scope(None) == (None, None)
+    assert s.parse_pdf_scope("") == (None, None)
+    assert s.parse_pdf_scope("~/Desktop/draft.pdf") == (None, "~/Desktop/draft.pdf")
+
+
+def test_parse_pdf_scope_single_scene_number():
+    assert s.parse_pdf_scope("5") == ({5}, None)
+    assert s.parse_pdf_scope("5 out.pdf") == ({5}, "out.pdf")
+
+
+def test_parse_pdf_scope_scene_range():
+    assert s.parse_pdf_scope("1-10") == (set(range(1, 11)), None)
+    assert s.parse_pdf_scope("10-1") == (set(range(1, 11)), None)  # reversed range still works
+    assert s.parse_pdf_scope("3-3") == ({3}, None)
+    assert s.parse_pdf_scope("1-10 ~/sides.pdf") == (set(range(1, 11)), "~/sides.pdf")
+
+
+def test_parse_pdf_scope_character_filter():
+    assert s.parse_pdf_scope("char VIKRANTH") == (("char", "VIKRANTH"), None)
+    assert s.parse_pdf_scope("character VIKRANTH") == (("char", "VIKRANTH"), None)
+    assert s.parse_pdf_scope("char VIKRANTH out.pdf") == (("char", "VIKRANTH"), "out.pdf")
+
+
+def test_parse_pdf_scope_character_filter_quoted_multiword_name():
+    assert s.parse_pdf_scope('char "OLD MAN"') == (("char", "OLD MAN"), None)
+
+
+def test_parse_pdf_scope_character_filter_missing_name_is_usage_error():
+    scope, path = s.parse_pdf_scope("char")
+    assert scope == "char:usage"
+
+
+def test_do_export_pdf_scene_range_exports_only_those_scenes(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False  # skip the sides-title prompt
+    ed.do_export_pdf("1-2")
+    out = tmp_path / "script_scenes_1-2.pdf"
+    assert out.exists()
+    reader = pypdf.PdfReader(str(out))
+    text = "\n".join(p.extract_text() or "" for p in reader.pages)
+    assert "KITCHEN" in text
+    assert "STREET" in text
+    assert "GARAGE" not in text
+    assert "OFFICE" not in text
+
+
+def test_do_export_pdf_scene_range_stamps_original_scene_numbers(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("3-4")  # scenes 3 and 4, not the subset's own 1 and 2
+    out = tmp_path / "script_scenes_3-4.pdf"
+    reader = pypdf.PdfReader(str(out))
+    # Scoped exports now get their own title page (page 0) -- the script
+    # content with the scene-number stamp is the page after it.
+    tokens = reader.pages[1].extract_text().split("\n")
+    assert "3" in tokens
+    assert "1" not in tokens
+
+
+def test_do_export_pdf_character_filter_exports_only_their_scenes(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("char VIKRANTH")
+    out = tmp_path / "script_VIKRANTH.pdf"
+    assert out.exists()
+    reader = pypdf.PdfReader(str(out))
+    text = "\n".join(p.extract_text() or "" for p in reader.pages)
+    assert "KITCHEN" in text   # scene 1 -- VIKRANTH has a dialogue cue
+    assert "GARAGE" in text    # scene 3 -- VIKRANTH mentioned in action
+    assert "STREET" not in text
+    assert "OFFICE" not in text
+
+
+def test_do_export_pdf_character_with_no_scenes_reports_status_and_does_not_export(tmp_path):
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("char NOBODY")
+    assert not (tmp_path / "script_NOBODY.pdf").exists()
+    assert "NOBODY" in ed.status
+
+
+def test_do_export_pdf_scene_range_out_of_bounds_reports_status(tmp_path):
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("50-60")
+    assert not list(tmp_path.glob("*scenes_50*"))
+    assert "50" in ed.status
+
+
+def test_do_export_pdf_plain_call_still_exports_everything(tmp_path):
+    """No regression for the existing, unscoped ':pdf' / ':pdf PATH'
+    behavior -- a plain call still exports the whole script to the usual
+    default location with no suffix."""
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.do_export_pdf(None)
+    out = tmp_path / "script.pdf"
+    assert out.exists()
+    reader = pypdf.PdfReader(str(out))
+    text = "\n".join(p.extract_text() or "" for p in reader.pages)
+    for scene in ("KITCHEN", "STREET", "GARAGE", "OFFICE"):
+        assert scene in text
+
+
+def test_do_export_pdf_explicit_path_after_scope_is_honored(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Test"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    out = tmp_path / "custom_sides.pdf"
+    ed.do_export_pdf(f"char VIKRANTH {out}")
+    assert out.exists()
+
+
+# --------------------------------------------------------------------------
+# [sides] -- scoped (sides/character-draft) exports get their own title
+# page: a custom or auto-generated Title, the rest of the cover page
+# carried over from the full script's own metadata, and an optional
+# "(an excerpt from ...)" note. See sides_export_settings(),
+# default_sides_title(), sides_excerpt_subtitle(), and do_export_pdf().
+# --------------------------------------------------------------------------
+
+def test_sides_export_settings_defaults_and_overrides():
+    resolved = s.sides_export_settings(None)
+    assert resolved["cover_page"] is True
+    assert resolved["prompt_title"] is True
+    assert resolved["title_format"] == "Sides (Scene {start} - Scene {end})"
+    assert resolved["character_title_format"] == "Sides - {name} Draft"
+
+    cfg = copy.deepcopy(s.DEFAULT_CONFIG)
+    cfg["sides"]["prompt_title"] = False
+    resolved = s.sides_export_settings(cfg)
+    assert resolved["prompt_title"] is False
+    assert resolved["cover_page"] is True  # untouched keys keep the default
+
+
+def test_sides_export_settings_tolerates_missing_section():
+    # An old config.toml on disk from before this feature existed simply
+    # won't have a [sides] table -- must fall back to the built-in
+    # defaults rather than KeyError.
+    assert s.sides_export_settings({"general": {}}) == s.DEFAULT_CONFIG["sides"]
+
+
+def test_default_sides_title_scene_range():
+    cfg = s.DEFAULT_CONFIG["sides"]
+    assert s.default_sides_title(cfg, start=4, end=9) == "Sides (Scene 4 - Scene 9)"
+
+
+def test_default_sides_title_single_scene_uses_singular_format():
+    cfg = s.DEFAULT_CONFIG["sides"]
+    assert s.default_sides_title(cfg, start=5, end=5) == "Sides (Scene 5)"
+
+
+def test_default_sides_title_character():
+    cfg = s.DEFAULT_CONFIG["sides"]
+    assert s.default_sides_title(cfg, name="VIKRANTH") == "Sides - VIKRANTH Draft"
+
+
+def test_sides_excerpt_subtitle_formats_from_script_title():
+    cfg = s.DEFAULT_CONFIG["sides"]
+    assert s.sides_excerpt_subtitle("Beach House", cfg) == "(an excerpt from Beach House)"
+
+
+def test_sides_excerpt_subtitle_none_when_script_has_no_title():
+    cfg = s.DEFAULT_CONFIG["sides"]
+    assert s.sides_excerpt_subtitle("", cfg) is None
+    assert s.sides_excerpt_subtitle(None, cfg) is None
+    assert s.sides_excerpt_subtitle("   ", cfg) is None
+
+
+def test_sides_excerpt_subtitle_can_be_turned_off():
+    cfg = dict(s.DEFAULT_CONFIG["sides"])
+    cfg["excerpt_note"] = False
+    assert s.sides_excerpt_subtitle("Beach House", cfg) is None
+
+
+def test_do_export_pdf_scoped_export_now_gets_its_own_cover_page(tmp_path):
+    """Scoped exports used to never draw a cover page at all. They now get
+    one built from the sides title/excerpt note -- but still never reuse
+    the *full script's* Title verbatim as the big heading."""
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "The Full Screenplay Title"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("1-1")
+    out = tmp_path / "script_scenes_1.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "SIDES (SCENE 1)" in text
+    assert "AN EXCERPT FROM THE FULL SCREENPLAY TITLE" in text
+    # The full script's own title is never drawn as the big cover heading
+    # on a scoped export -- only inside the small excerpt note.
+    assert "THE FULL SCREENPLAY TITLE" not in text.replace(
+        "AN EXCERPT FROM THE FULL SCREENPLAY TITLE", "")
+
+
+def test_do_export_pdf_scoped_export_carries_over_rest_of_cover_fields(tmp_path):
+    """"Keep the rest the same": Author/Genre/etc. from the full script's
+    metadata still show up on a scoped export's title page, only the
+    Title itself is replaced."""
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Beach House", "Author": "Priya Menon", "Genre": "Drama"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("char VIKRANTH")
+    out = tmp_path / "script_VIKRANTH.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "SIDES - VIKRANTH DRAFT" in text
+    assert "BY PRIYA MENON" in text
+    assert "DRAMA" in text
+
+
+def test_do_export_pdf_scoped_export_prompts_for_custom_title(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Beach House"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.stdscr = _FakeWChStdscr(_queued_field_answers("Table Read Draft"))
+    import curses as _curses
+    orig = _curses.curs_set
+    _curses.curs_set = lambda n: None
+    try:
+        ed.do_export_pdf("1-2")
+    finally:
+        _curses.curs_set = orig
+    out = tmp_path / "script_scenes_1-2.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "TABLE READ DRAFT" in text
+    assert "AN EXCERPT FROM BEACH HOUSE" in text  # excerpt note shows either way
+
+
+def test_do_export_pdf_scoped_export_blank_prompt_auto_generates(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Beach House"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.stdscr = _FakeWChStdscr(_queued_field_answers(""))
+    import curses as _curses
+    orig = _curses.curs_set
+    _curses.curs_set = lambda n: None
+    try:
+        ed.do_export_pdf("char VIKRANTH")
+    finally:
+        _curses.curs_set = orig
+    out = tmp_path / "script_VIKRANTH.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "SIDES - VIKRANTH DRAFT" in text
+
+
+def test_do_export_pdf_scoped_export_prompt_disabled_never_touches_stdscr(tmp_path):
+    """sides.prompt_title = false must skip the prompt outright -- a
+    _FakeStdscr with no get_wch() queued would raise if it were touched."""
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Beach House"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.stdscr = _FakeStdscr()  # no get_wch queued
+    ed.do_export_pdf("1-1")  # must not raise
+    out = tmp_path / "script_scenes_1.pdf"
+    assert out.exists()
+
+
+def test_do_export_pdf_scoped_export_cover_page_disabled_via_sides_config(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Should Not Appear"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["cover_page"] = False
+    ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire either
+    ed.do_export_pdf("1-1")
+    out = tmp_path / "script_scenes_1.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "SHOULD NOT APPEAR" not in text
+    assert "SIDES" not in text
+
+
+def test_do_export_pdf_scoped_export_excerpt_note_can_be_disabled(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    ed.metadata = {"Title": "Beach House"}
+    ed.filepath = str(tmp_path / "script.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.cfg["sides"]["excerpt_note"] = False
+    ed.do_export_pdf("1-1")
+    out = tmp_path / "script_scenes_1.pdf"
+    text = (pypdf.PdfReader(str(out)).pages[0].extract_text() or "").upper()
+    assert "SIDES (SCENE 1)" in text
+    assert "EXCERPT" not in text
+
+
+def test_do_export_pdf_scoped_export_on_titlepage_less_import_still_gets_a_cover(tmp_path):
+    """The imported-Fountain-with-no-title-page case: self.metadata == {}
+    (nothing typed, no :cover run). A scoped export must still get its
+    own title page -- naming the scene range/character -- and must not
+    show an excerpt note, since there's no script title to name."""
+    pypdf = pytest.importorskip("pypdf")
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    assert ed.metadata == {}
+    ed.filepath = str(tmp_path / "imported.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.do_export_pdf("char RISHITHA")
+    out = tmp_path / "imported_RISHITHA.pdf"
+    reader = pypdf.PdfReader(str(out))
+    text = (reader.pages[0].extract_text() or "").upper()
+    assert "SIDES - RISHITHA DRAFT" in text
+    assert "EXCERPT" not in text
+    # And the main script's own metadata is left untouched -- unlike the
+    # full-export path, a scoped export never triggers the general
+    # "no title page in this file" prompt/probe.
+    assert ed.metadata == {}
+
+
+def test_do_export_pdf_scoped_export_on_titlepage_less_import_skips_general_prompt(tmp_path):
+    """A scoped export on a title-page-less import must go straight to
+    its own sides-title flow, never the full-script "no title page in
+    this file" prompt -- a _FakeStdscr with nothing queued for that
+    6-field prompt would raise if it fired."""
+    ed = _make_editor(save_dir=tmp_path, buffer=copy.deepcopy(_SIDES_BUFFER))
+    assert ed.metadata == {}
+    ed.filepath = str(tmp_path / "imported.fountain")
+    ed.cfg["sides"]["prompt_title"] = False
+    ed.stdscr = _FakeStdscr()  # no get_wch queued
+    ed.do_export_pdf("1-1")  # must not raise
+    assert (tmp_path / "imported_scenes_1.pdf").exists()
+    assert ed._title_prompt_shown is False  # the *general* prompt never ran
+
+
 def test_do_export_pdf_reads_scene_numbers_from_config(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[
         {"type": "heading", "text": "INT. KITCHEN - DAY"},
@@ -1954,7 +2627,7 @@ def test_do_export_pdf_reads_scene_numbers_from_config(tmp_path, monkeypatch):
     ed.cfg["general"]["pdf_scene_numbers"] = False
     seen = {}
 
-    def fake_export_pdf(path, metadata, buffer, scene_numbers=True):
+    def fake_export_pdf(path, metadata, buffer, scene_numbers=True, cover_page=True):
         seen["scene_numbers"] = scene_numbers
 
     monkeypatch.setattr(s, "export_pdf", fake_export_pdf)
@@ -1994,7 +2667,7 @@ def test_export_pdf_prompts_for_titlepage_when_metadata_empty(tmp_path, monkeypa
     monkeypatch.setattr(curses, "curs_set", lambda n: None)
     seen = {}
     monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True:
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {"Title": "My Script", "Author": "Wmans"}
@@ -2010,7 +2683,7 @@ def test_export_pdf_skips_prompt_when_metadata_already_present(tmp_path, monkeyp
     ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire
     seen = {}
     monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True:
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {"Title": "Already Has A Cover"}
@@ -2027,7 +2700,7 @@ def test_export_pdf_declining_prompt_exports_with_no_titlepage(tmp_path, monkeyp
     monkeypatch.setattr(curses, "curs_set", lambda n: None)
     seen = {}
     monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True:
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {}
@@ -2059,6 +2732,199 @@ def test_export_pdf_prompt_disabled_via_config(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "export_pdf", lambda *a, **k: None)
     ed.do_export_pdf(str(tmp_path / "out.pdf"))  # must not raise/hang
     assert ed.metadata == {}
+
+
+# --------------------------------------------------------------------------
+# general.cover_page -- full master switch for the PDF cover page,
+# independent of prompt_missing_titlepage (which only gates the prompt).
+# --------------------------------------------------------------------------
+
+def test_cover_page_disabled_skips_prompt_and_passes_false_through(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[
+        {"type": "heading", "text": "INT. KITCHEN - DAY"},
+    ])
+    ed.cfg["general"]["cover_page"] = False
+    ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire
+    seen = {}
+    monkeypatch.setattr(s, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+                             seen.update(cover_page=cover_page))
+    ed.do_export_pdf(str(tmp_path / "out.pdf"))
+    assert seen["cover_page"] is False
+
+
+def test_cover_page_disabled_even_with_metadata_present(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[
+        {"type": "heading", "text": "INT. KITCHEN - DAY"},
+    ])
+    ed.metadata = {"Title": "Has Metadata"}
+    ed.cfg["general"]["cover_page"] = False
+    seen = {}
+    monkeypatch.setattr(s, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+                             seen.update(cover_page=cover_page, metadata=dict(metadata)))
+    ed.do_export_pdf(str(tmp_path / "out.pdf"))
+    assert seen["cover_page"] is False
+    assert seen["metadata"] == {"Title": "Has Metadata"}  # untouched, just not drawn
+
+
+def test_export_pdf_title_page_flag_respects_cover_page_config(tmp_path):
+    # export_pdf() itself: cover_page=False must suppress the title page
+    # section even with non-empty metadata, not just skip the prompt.
+    pypdf = pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+    out = tmp_path / "out.pdf"
+    s.export_pdf(out, {"Title": "Should Not Appear"},
+                 [{"type": "action", "text": "hi"}], cover_page=False)
+    reader = pypdf.PdfReader(str(out))
+    assert len(reader.pages) == 1  # no separate title page
+    text = reader.pages[0].extract_text()
+    assert "Should Not Appear" not in text
+
+
+def test_has_title_page_respects_cover_page_config(tmp_path):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.metadata = {"Title": "Something"}
+    assert ed._has_title_page() is True
+    ed.cfg["general"]["cover_page"] = False
+    assert ed._has_title_page() is False  # page-count estimate must agree with export
+
+
+# --------------------------------------------------------------------------
+# :cover -- manually (re-)prompt for cover-page fields, any number of
+# times, prefilled with whatever's already set.
+# --------------------------------------------------------------------------
+
+def test_cover_command_prefills_existing_metadata(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.metadata = {"Title": "Old Title", "Author": "Wmans"}
+    seen_initial = {}
+
+    def fake_new_file_metadata(stdscr, cfg, heading=None, initial=None):
+        seen_initial["initial"] = dict(initial or {})
+        return dict(initial or {})  # simulate accepting every prefilled value as-is
+
+    monkeypatch.setattr(s, "new_file_metadata", fake_new_file_metadata)
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    assert seen_initial["initial"] == {"Title": "Old Title", "Author": "Wmans"}
+    assert ed.metadata == {"Title": "Old Title", "Author": "Wmans"}
+    assert ed.dirty is False  # nothing actually changed
+
+
+def test_cover_command_updates_metadata_and_marks_dirty(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.metadata = {"Title": "Old Title"}
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None:
+                             {"Title": "New Title"})
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    assert ed.metadata == {"Title": "New Title"}
+    assert ed.dirty is True
+    assert "updated" in ed.status.lower()
+
+
+def test_cover_command_can_clear_metadata_entirely(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.metadata = {"Title": "Old Title"}
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None: {})
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    assert ed.metadata == {}
+    assert ed.dirty is True
+    assert "cleared" in ed.status.lower()
+
+
+def test_cover_command_resets_title_prompt_shown_every_call(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed._title_prompt_shown = True  # e.g. already declined once via :pdf
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None: {})
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    assert ed._title_prompt_shown is False
+
+
+def test_cover_command_runs_every_time_unlike_pdfs_one_shot(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    calls = []
+    monkeypatch.setattr(
+        s, "new_file_metadata",
+        lambda stdscr, cfg, heading=None, initial=None: calls.append(1) or {})
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    ed.do_cover_prompt()
+    ed.do_cover_prompt()
+    assert len(calls) == 3  # every call prompts, no one-shot suppression
+
+
+def test_cover_command_via_execute_command_returns_to_editor(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None:
+                             {"Title": "Via Command"})
+    ed.stdscr = _FakeStdscr()
+    result = ed.execute_command("cover")
+    assert result is None  # doesn't quit/open -- just returns to the screenplay
+    assert ed.metadata == {"Title": "Via Command"}
+
+
+def test_cover_command_status_notes_when_cover_page_disabled(tmp_path, monkeypatch):
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.cfg["general"]["cover_page"] = False
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None:
+                             {"Title": "Saved Anyway"})
+    ed.stdscr = _FakeStdscr()
+    ed.do_cover_prompt()
+    assert ed.metadata == {"Title": "Saved Anyway"}  # still stored
+    assert "cover_page = false" in ed.status  # but flagged as inert in status
+
+
+def test_cover_command_allowed_in_readonly(tmp_path, monkeypatch):
+    # Metadata edits aren't the buffer-content changes readonly guards
+    # against -- :pdf's own inline prompt is already allowed in readonly
+    # (see execute_command's readonly-blocked head list), :cover follows
+    # the same reasoning.
+    ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
+    ed.readonly = True
+    monkeypatch.setattr(s, "new_file_metadata",
+                         lambda stdscr, cfg, heading=None, initial=None:
+                             {"Title": "Still Works"})
+    ed.stdscr = _FakeStdscr()
+    ed.execute_command("cover")
+    assert ed.metadata == {"Title": "Still Works"}
+    assert "Read-only" not in ed.status
+
+
+def test_prompt_line_prefill_kept_on_plain_enter(monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", lambda n: None)
+    stdscr = _FakeWChStdscr([curses.KEY_ENTER])
+    result = s.prompt_line(stdscr, 0, 0, "Title", initial="Existing Title")
+    assert result == "Existing Title"
+
+
+def test_prompt_line_prefill_cleared_by_backspacing_then_enter(monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", lambda n: None)
+    backspaces = [curses.KEY_BACKSPACE] * len("Existing")
+    stdscr = _FakeWChStdscr(backspaces + [curses.KEY_ENTER])
+    result = s.prompt_line(stdscr, 0, 0, "Title", initial="Existing")
+    assert result == ""
+
+
+def test_new_file_metadata_initial_prefills_matching_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(curses, "curs_set", lambda n: None)
+    cfg = copy.deepcopy(s.DEFAULT_CONFIG)
+    cfg["prompts"]["fields"] = ["Title", "Author"]
+    # Both fields answered with a bare Enter -- should round-trip the
+    # prefilled initial values unchanged.
+    stdscr = _FakeWChStdscr([curses.KEY_ENTER, curses.KEY_ENTER])
+    result = s.new_file_metadata(stdscr, cfg,
+                                  initial={"Title": "Kept", "Author": "Also Kept"})
+    assert result == {"Title": "Kept", "Author": "Also Kept"}
+
 
 
 # --------------------------------------------------------------------------
