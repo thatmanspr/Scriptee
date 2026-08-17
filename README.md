@@ -2,32 +2,6 @@
 
 A vim-motion TUI screenwriter for Linux. `curses` in, Fountain out.
 
-## Philosophy
-
-Scriptee does one thing: let you write a screenplay in a terminal,
-correctly formatted, without leaving the keyboard. Everything else was
-left out on purpose.
-
-- **Plain text, not a database.** Scripts are stored as
-  [Fountain](https://fountain.io) — a real, open, diffable format. Your
-  words are readable in `cat`, `grep`, `git diff`, and any other editor,
-  forever. No proprietary format, no lock-in.
-- **stdlib over frameworks.** `curses` + `reportlab` for PDF export. That's
-  the entire dependency tree. No widget toolkit, no Electron, no runtime
-  you didn't already have.
-- **Config, not customization theater.** One `config.toml` — keybinds,
-  colors, margins, PDF geometry, cover-page fields. All of it is plain
-  data, remappable, with sane defaults so you never have to touch it.
-- **Local. Always.** No accounts, no sync, no telemetry, no network calls
-  of any kind. Your screenplay is a file on your disk and nowhere else.
-- **Do the one thing right.** Modal editing, correct industry PDF
-  formatting (scene numbers, dual dialogue, title pages), and nothing
-  bolted on that a real screenwriting app wouldn't also need — no
-  outlining boards, no cloud collab, no AI co-writer.
-
-If a feature doesn't serve "write and format a screenplay fast," it
-doesn't belong here.
-
 ## Install
 
 ```bash
@@ -36,8 +10,29 @@ chmod +x install.sh
 scriptee
 ```
 
-Full usage, every command, and the complete config reference: see
-[`REFERENCE.md`](REFERENCE.md).
+Full command and config reference: [`REFERENCE.md`](REFERENCE.md).
+
+## Philosophy
+
+Suckless software: do one thing, do it right, do nothing else.
+
+Scriptee writes and formats a screenplay in a terminal. That's the whole
+program.
+
+- **Plain text, not a database.** Scripts are stored as
+  [Fountain](https://fountain.io) — a real, open, diffable format.
+  Readable in `cat`, `grep`, `git diff`, and any other editor, forever.
+  No proprietary format, no lock-in.
+- **stdlib over frameworks.** `curses` + `reportlab` for PDF export. That
+  is the entire dependency tree.
+- **Config, not customization theater.** One `config.toml`. Plain data,
+  fully remappable, sane defaults, never required.
+- **Local. Always.** No accounts, no sync, no telemetry, no network calls.
+  Your screenplay is a file on your disk and nowhere else.
+
+If a feature doesn't serve "write and format a screenplay fast," it
+doesn't belong here — no outlining boards, no cloud collab, no AI
+co-writer.
 
 ## Grab a release, not `main`
 
