@@ -9,16 +9,87 @@ save_dir = "~/Documents/Scriptee"
 # matching the numbers already shown in the editor's left gutter. Set to
 # false for a clean draft PDF with no margin numbers.
 pdf_scene_numbers = true
+# Master on/off for the PDF cover page, independent of whatever's in the
+# title-page fields below. false means :pdf never draws one, full stop.
+# :cover (in-app) still works either way, so fields can be filled in
+# ahead of flipping this back on.
+cover_page = true
 # If a script has no title page at all (e.g. imported from a Fountain file
 # that never had one) and you hit :pdf, ask once for the same fields [n]ew
 # screenplays get -- otherwise the export silently has no cover page. Set
-# to false to never ask and just export without one.
+# to false to never ask and just export without one. Has no effect if
+# cover_page above is false.
 prompt_missing_titlepage = true
 
 [prompts]
 # Fields asked when creating a new screenplay. Add, remove, reorder freely.
 # Any field left blank when prompted is simply skipped.
 fields = ["Title", "Author", "Genre", "Year", "Contact (Number)", "Contact (Email)"]
+
+[sides]
+# Title page for a *scoped* ":pdf" export -- a scene range ("sides") or
+# ":pdf char NAME" (a character's draft). Independent of [general]'s
+# cover_page/prompt_missing_titlepage above, which only ever govern the
+# full-script export.
+#
+# Master on/off: whether a scoped export gets a title page at all. false
+# means scene-range and character exports never draw one, no matter what
+# else is set below -- the old behavior, before this section existed.
+cover_page = true
+# Ask for a custom title before each scoped export -- just the one
+# field, not the full [prompts] fields list above, since a sides PDF
+# keeps the rest of the cover page (Author, Contact, ...) as whatever's
+# already set for the full script. Leaving the prompt blank + Enter
+# auto-generates one from the *_format strings below. Set to false to
+# skip the prompt entirely and always auto-generate.
+prompt_title = true
+# Auto-generated title for a scene-range export when the prompt above is
+# left blank (or skipped). {start}/{end} are the first/last scene
+# numbers in the exported range.
+title_format = "Sides (Scene {start} - Scene {end})"
+# Used instead of title_format when the range is a single scene, so it
+# reads "Sides (Scene 4)" rather than "Sides (Scene 4 - Scene 4)".
+# {start} and {end} are both that one scene number.
+title_format_single = "Sides (Scene {start})"
+# Auto-generated title for a ":pdf char NAME" export. {name} is the
+# character name exactly as typed at the prompt.
+character_title_format = "Sides - {name} Draft"
+# Small line under the sides title naming which script it's excerpted
+# from, e.g. "(an excerpt from Beach House)" -- drawn whether the title
+# above was typed in or auto-generated. Uses whatever's already in the
+# full script's own Title field (see :cover); skipped automatically when
+# that's empty (e.g. an imported .fountain with no title page at all)
+# since there's no script title to name. Set to false to never draw
+# this line.
+excerpt_note = true
+excerpt_format = "(an excerpt from {title})"
+
+[character_export]
+# Controls ":pdf char NAME" (a.k.a. ":pdf character NAME") -- the scoped
+# export that pulls out every scene one character is in. A scene always
+# counts if the name matches a CHARACTER cue exactly; this list adds
+# other line types to also search, so a name just *mentioned* in the
+# scene (not necessarily spoken by that character) still pulls the scene
+# in, for full context. Matching is always case-insensitive and
+# whole-word, so "AL" won't match "ALEX" or "ALWAYS".
+#
+# "dialogue" is what makes another character saying "...tell Danny..."
+# in their own line count -- on by default, along with "action" (a
+# character doing something with no dialogue of their own). Add
+# "parenthetical", "shot", or "transition" too, or trim the list down to
+# just ["action"] (or even []) to match only exact CHARACTER cues.
+search_in = ["action", "dialogue"]
+
+[character_export.aliases]
+# Nicknames/alternate names for a character, so scenes that only use the
+# nickname still get pulled into that character's sides export. Keys are
+# matched case-insensitively against whatever name you pass to
+# ":pdf char" -- values are a list of alternates to also search for
+# (also case-insensitive, whole-word). Example, commented out:
+# DANNY = ["Dan"]
+# means ":pdf char Danny" (or ":pdf char Dan") includes every scene
+# mentioning either "Danny" or "Dan". Empty by default -- add a line per
+# character that actually gets nicknamed in your script.
 
 [behavior]
 # Seconds of dirty (unsaved), idle-tolerant editing between autosave
