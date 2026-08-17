@@ -54,16 +54,84 @@ DEFAULT_CONFIG = {
     "general": {
         "save_dir": str(Path.home() / "Documents" / "Scriptee"),
         "pdf_scene_numbers": True,
+        # Master on/off for the PDF cover page, independent of whatever's
+        # in metadata. False means :pdf never draws one, full stop -- for
+        # "I never want a cover page" (as opposed to
+        # prompt_missing_titlepage below, which is only about the prompt,
+        # not the page itself). :cover still works either way, so
+        # metadata can be filled in ahead of flipping this back on.
+        "cover_page": True,
         # If a script has no title page at all (e.g. a Fountain file
         # imported from elsewhere that never had one) and hits :pdf, ask
         # once for the same fields [n]ew screenplays get -- otherwise the
         # export silently comes out with no cover page. Set to false to
-        # never ask and just export without one.
+        # never ask and just export without one. Has no effect if
+        # cover_page above is false.
         "prompt_missing_titlepage": True,
     },
     "prompts": {
         "fields": ["Title", "Author", "Genre", "Year",
                    "Contact (Number)", "Contact (Email)"],
+    },
+    "sides": {
+        # Title page for a *scoped* ":pdf" export -- a scene range
+        # ("sides") or ":pdf char NAME" (a character's draft). Entirely
+        # independent of [general] cover_page/prompt_missing_titlepage,
+        # which only ever govern the full-script export.
+        #
+        # Master on/off: whether a scoped export gets a title page at
+        # all. false means scene-range and character exports never draw
+        # one, no matter what's set below.
+        "cover_page": True,
+        # Ask for a custom title before each scoped export -- just the
+        # one field, not the full [prompts] fields list, since a sides
+        # PDF keeps the rest of the cover page (Author, Contact, ...) as
+        # whatever's already set for the full script. Leaving the prompt
+        # blank + Enter auto-generates one from the *_format strings
+        # below. false skips the prompt entirely and always auto-generates.
+        "prompt_title": True,
+        # Auto-generated title for a scene-range export when the prompt
+        # above is left blank (or skipped). {start}/{end} are the
+        # first/last scene numbers in the exported range.
+        "title_format": "Sides (Scene {start} - Scene {end})",
+        # Used instead of title_format when the range is a single scene,
+        # so it reads "Sides (Scene 4)" rather than "Sides (Scene 4 -
+        # Scene 4)". {start} and {end} are both that one scene number.
+        "title_format_single": "Sides (Scene {start})",
+        # Auto-generated title for a ":pdf char NAME" export. {name} is
+        # the character name exactly as typed at the prompt.
+        "character_title_format": "Sides - {name} Draft",
+        # Small line under the sides title naming which script it's
+        # excerpted from, e.g. "(an excerpt from Beach House)" -- drawn
+        # whether the title above was typed or auto-generated. Uses
+        # whatever's already in the full script's own Title field (see
+        # :cover); skipped automatically when that's empty (e.g. an
+        # imported .fountain with no title page at all) since there's no
+        # script title to name. Set to false to never draw this line.
+        "excerpt_note": True,
+        "excerpt_format": "(an excerpt from {title})",
+    },
+    "character_export": {
+        # Which non-cue line types are also scanned for a character's name
+        # (or alias) when resolving ":pdf char NAME" -- a scene is pulled
+        # in if the name shows up as a whole word, case-insensitively, in
+        # any of these, *in addition to* a matching CHARACTER cue (that
+        # exact-name check always happens and isn't gated by this list).
+        # "dialogue" here is what makes a scene get included just because
+        # some *other* character mentions the name in their line -- so a
+        # sides PDF still has full context even for scenes where the
+        # requested character never appears themselves. Valid values:
+        # "action", "dialogue", "parenthetical", "shot", "transition".
+        # On by default; trim the list to narrow what counts as a match.
+        "search_in": ["action", "dialogue"],
+        # Per-character alternate names/nicknames -- e.g. a character
+        # CHARACTER-cued as DANNY but called "Dan" by other characters in
+        # dialogue/action. Keys are matched case-insensitively against the
+        # name given to ":pdf char", so { "DANNY": ["Dan"] } means both
+        # ":pdf char Danny" and ":pdf char Dan" pull in every scene that
+        # mentions either name. Empty by default -- add entries for
+        # whichever characters actually get nicknamed in your script.
+        "aliases": {},
     },
     "behavior": {
         # Seconds of dirty, idle-tolerant editing between autosave snapshots.
@@ -136,7 +204,10 @@ DEFAULT_CONFIG = {
             # (zero embedding, works everywhere). "custom" registers the
             # TrueType files named under custom_font below instead -- e.g.
             # to use Courier Prime, a free font designed to match Courier's
-            # own metrics but with cleaner letterforms.
+            # own metrics but with cleaner, less cramped-looking letterforms
+            # (especially bold). write_default_config() auto-fills this with
+            # Scriptee's bundled Courier Prime when it finds one -- see
+            # _bundled_courier_prime().
             "font_family": "courier",  # "courier" or "custom"
             "custom_font": {
                 "regular": "",      # required if font_family = "custom"
@@ -244,11 +315,61 @@ def apply_runtime_config(cfg):
     _recompute_pdf_geometry(cfg)
 
 
+def _bundled_courier_prime():
+    """Locate Scriptee's bundled Courier Prime TTFs, if present, so a
+    freshly-written config.toml can default to them instead of the PDF
+    spec's built-in base-14 Courier.
+
+    Base-14 Courier is what export_pdf() falls back to when
+    format.pdf.font_family is left at "courier" -- it needs no file and
+    works in every viewer, but at 12pt its bold weight in particular
+    renders noticeably heavier and more cramped-looking than Courier
+    Prime (the font actually designed for screenplays, and what most
+    other screenwriting apps embed). Same margins, same 12pt leading,
+    same wrap widths -- just a denser-looking typeface -- is exactly the
+    kind of "why does this look cramped at the same page count" gap this
+    resolves.
+
+    Checked in order: next to this script (running from a repo/dev
+    checkout), then the fonts/ directory install.sh copies into
+    ~/.local/share/scriptee/. Returns {} if neither location has a full
+    Regular/Bold/Italic set -- callers must treat that as "no bundled
+    font found" and leave font_family at its safe "courier" default,
+    never write a "custom" config pointing at files that don't exist.
+    """
+    candidates = [
+        Path(__file__).resolve().parent / "fonts",
+        Path.home() / ".local" / "share" / "scriptee" / "fonts",
+    ]
+    for d in candidates:
+        reg = d / "CourierPrime-Regular.ttf"
+        bold = d / "CourierPrime-Bold.ttf"
+        italic = d / "CourierPrime-Italic.ttf"
+        if reg.is_file() and bold.is_file() and italic.is_file():
+            return {"regular": str(reg), "bold": str(bold), "italic": str(italic)}
+    return {}
+
+
 def write_default_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_PATH.exists():
         return
-    CONFIG_PATH.write_text(DEFAULT_TOML_TEXT)
+    text = DEFAULT_TOML_TEXT
+    fonts = _bundled_courier_prime()
+    if fonts:
+        # Only flip the default when the files are actually there --
+        # otherwise leave the template's safe "courier" / empty-paths
+        # default untouched, so _apply_pdf_font_config() never has
+        # anything to fall back from on a bare/manual install.
+        text = (
+            text
+            .replace('font_family = "courier"    # "courier" or "custom"',
+                      'font_family = "custom"     # "courier" or "custom"')
+            .replace('regular = ""', f'regular = "{fonts["regular"]}"')
+            .replace('bold = ""', f'bold = "{fonts["bold"]}"')
+            .replace('italic = ""', f'italic = "{fonts["italic"]}"')
+        )
+    CONFIG_PATH.write_text(text)
 
 
 DEFAULT_TOML_TEXT = """\
@@ -258,16 +379,87 @@ save_dir = "~/Documents/Scriptee"
 # matching the numbers already shown in the editor's left gutter. Set to
 # false for a clean draft PDF with no margin numbers.
 pdf_scene_numbers = true
+# Master on/off for the PDF cover page, independent of whatever's in the
+# title-page fields below. false means :pdf never draws one, full stop.
+# :cover (in-app) still works either way, so fields can be filled in
+# ahead of flipping this back on.
+cover_page = true
 # If a script has no title page at all (e.g. imported from a Fountain file
 # that never had one) and you hit :pdf, ask once for the same fields [n]ew
 # screenplays get -- otherwise the export silently has no cover page. Set
-# to false to never ask and just export without one.
+# to false to never ask and just export without one. Has no effect if
+# cover_page above is false.
 prompt_missing_titlepage = true
 
 [prompts]
 # Fields asked when creating a new screenplay. Add, remove, reorder freely.
 # Any field left blank when prompted is simply skipped.
 fields = ["Title", "Author", "Genre", "Year", "Contact (Number)", "Contact (Email)"]
+
+[sides]
+# Title page for a *scoped* ":pdf" export -- a scene range ("sides") or
+# ":pdf char NAME" (a character's draft). Entirely independent of
+# [general]'s cover_page/prompt_missing_titlepage, which only ever
+# govern the full-script export.
+#
+# Master on/off: whether a scoped export gets a title page at all. false
+# means scene-range and character exports never draw one, no matter what
+# else is set below.
+cover_page = true
+# Ask for a custom title before each scoped export -- just the one
+# field, not the full [prompts] fields list above, since a sides PDF
+# keeps the rest of the cover page (Author, Contact, ...) as whatever's
+# already set for the full script. Leaving the prompt blank + Enter
+# auto-generates one from the *_format strings below. Set to false to
+# skip the prompt entirely and always auto-generate.
+prompt_title = true
+# Auto-generated title for a scene-range export when the prompt above is
+# left blank (or skipped). {start}/{end} are the first/last scene
+# numbers in the exported range.
+title_format = "Sides (Scene {start} - Scene {end})"
+# Used instead of title_format when the range is a single scene, so it
+# reads "Sides (Scene 4)" rather than "Sides (Scene 4 - Scene 4)".
+# {start} and {end} are both that one scene number.
+title_format_single = "Sides (Scene {start})"
+# Auto-generated title for a ":pdf char NAME" export. {name} is the
+# character name exactly as typed at the prompt.
+character_title_format = "Sides - {name} Draft"
+# Small line under the sides title naming which script it's excerpted
+# from, e.g. "(an excerpt from Beach House)" -- drawn whether the title
+# above was typed in or auto-generated. Uses whatever's already in the
+# full script's own Title field (see :cover); skipped automatically when
+# that's empty (e.g. an imported .fountain with no title page at all)
+# since there's no script title to name. Set to false to never draw
+# this line.
+excerpt_note = true
+excerpt_format = "(an excerpt from {title})"
+
+[character_export]
+# Controls ":pdf char NAME" (a.k.a. ":pdf character NAME") -- the scoped
+# export that pulls out every scene one character is in. A scene always
+# counts if the name matches a CHARACTER cue exactly; this list adds
+# other line types to also search, so a name just *mentioned* in the
+# scene (not necessarily spoken by that character) still pulls the scene
+# in, for full context. Matching is always case-insensitive and
+# whole-word, so "AL" won't match "ALEX" or "ALWAYS".
+#
+# "dialogue" is what makes another character saying "...tell Danny..."
+# in their own line count -- on by default, along with "action" (a
+# character doing something with no dialogue of their own). Add
+# "parenthetical", "shot", or "transition" too, or trim the list down to
+# just ["action"] (or even []) to match only exact CHARACTER cues.
+search_in = ["action", "dialogue"]
+
+[character_export.aliases]
+# Nicknames/alternate names for a character, so scenes that only use the
+# nickname still get pulled into that character's sides export. Keys are
+# matched case-insensitively against whatever name you pass to
+# ":pdf char" -- values are a list of alternates to also search for
+# (also case-insensitive, whole-word). Example, commented out:
+# DANNY = ["Dan"]
+# means ":pdf char Danny" (or ":pdf char Dan") includes every scene
+# mentioning either "Danny" or "Dan". Empty by default -- add a line per
+# character that actually gets nicknamed in your script.
 
 [behavior]
 # Seconds of dirty (unsaved), idle-tolerant editing between autosave
@@ -371,6 +563,14 @@ page_size = "letter"       # "letter" or "a4"
 # via [format.pdf.custom_font] below. A bad or missing path silently
 # falls back to Courier with a note in the status bar after :pdf, so a
 # typo here can never break an export.
+#
+# If Scriptee's bundled Courier Prime was found at install time (see
+# fonts/ and install.sh), write_default_config() flips this to "custom"
+# and fills in custom_font below automatically -- what you see here is
+# only the safe zero-dependency fallback. Base-14 Courier's bold weight
+# in particular renders noticeably heavier/denser at 12pt than Courier
+# Prime, which is what can make a same-margins, same-leading export look
+# "cramped" next to another app's PDF even at the same page count.
 font_family = "courier"    # "courier" or "custom"
 left_edge_in = 1.5         # heading / action / shot start column
 dialogue_left_in = 2.5
@@ -712,6 +912,81 @@ def cursor_position(line, width, cx):
     return locate_cursor(wrapped, disp_cx)
 
 
+def _inverse_collapsed_offset(logical, disp_target):
+    """Inverse of _collapsed_offset(): map a collapsed-whitespace display
+    offset back onto an offset in `logical` (marker-stripped, whitespace
+    still intact) text. Structurally mirrors _collapsed_offset()'s own
+    token walk step for step, so the two stay exact inverses of one
+    another instead of drifting out of sync with each other as either
+    gets tweaked."""
+    tokens = [t for t in re.split(r'(\s+)', logical) if t]
+    raw_pos = 0
+    disp_pos = 0
+    for idx, tok in enumerate(tokens):
+        tok_len = len(tok)
+        at_last_token = idx == len(tokens) - 1
+        if disp_target < disp_pos + tok_len or (at_last_token and disp_target == disp_pos + tok_len):
+            return raw_pos + max(0, disp_target - disp_pos)
+        raw_pos += tok_len
+        if tok.isspace():
+            if not at_last_token:
+                disp_pos += 1
+        else:
+            disp_pos += tok_len
+    return raw_pos
+
+
+def _inverse_display_offset(text, logical_target):
+    """Inverse of display_offset(): map an offset in the marker-stripped
+    "logical" text back onto the corresponding raw offset in `text`
+    (which still has the literal `*`/`**` markers in it)."""
+    raw_pos = 0
+    disp_pos = 0
+    for piece in re.split(r'(\*\*[^*]+\*\*|\*[^*]+\*)', text):
+        if not piece:
+            continue
+        if piece.startswith('**') and piece.endswith('**') and len(piece) > 3:
+            content, delim = piece[2:-2], 2
+        elif piece.startswith('*') and piece.endswith('*') and len(piece) > 1:
+            content, delim = piece[1:-1], 1
+        else:
+            content, delim = piece, 0
+        raw_len = len(piece)
+        disp_len = len(content)
+        if logical_target < disp_pos + disp_len or (disp_len == 0 and logical_target == disp_pos):
+            return raw_pos + delim + max(0, logical_target - disp_pos)
+        raw_pos += raw_len
+        disp_pos += disp_len
+    return raw_pos
+
+
+def raw_cx_for_visual(line, width, row, col):
+    """Inverse of cursor_position(): given a target (row, col) in the
+    wrapped *display* rows that `width` produces for `line`, return the
+    raw offset into line["text"] that lands the cursor there.
+
+    This is what makes visual-row movement (Editor._move_visual_row(),
+    below) possible: without it, "down" from the first row of a
+    two-row-wrapped ACTION/DIALOGUE/etc. line had nowhere to land inside
+    that same logical line, so it always jumped straight to the *next*
+    buffer element instead -- skipping the wrapped second row entirely,
+    and (since the destination line is often much shorter, e.g. a
+    CHARACTER cue) leaving the cursor and any further typing somewhere
+    the person didn't intend.
+    """
+    raw_text = line["text"]
+    if line["type"] in UPPERCASE_TYPES:
+        raw_text = raw_text.upper()  # matches cursor_position()'s own uppercasing
+    logical = "".join(chunk for chunk, _style in tokenize_inline(raw_text))
+    wrapped = wrapped_lines_for(line, width)
+    row = max(0, min(row, len(wrapped) - 1))
+    col = max(0, min(col, len(wrapped[row])))
+    disp_target = sum(len(w) + 1 for w in wrapped[:row]) + col
+    logical_target = _inverse_collapsed_offset(logical, disp_target)
+    raw_cx = _inverse_display_offset(raw_text, logical_target)
+    return max(0, min(raw_cx, len(line["text"])))
+
+
 # --------------------------------------------------------------------------
 # Fountain save / load
 # --------------------------------------------------------------------------
@@ -851,7 +1126,12 @@ def from_fountain(text):
     # spans several lines collapse in one match; any blank lines the strip
     # leaves behind are harmless since from_fountain() already treats runs
     # of blank lines as a single element separator, not distinct elements.
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    # The \n? on each side absorbs one adjacent newline along with the
+    # block itself, so a boneyard that sits on its own blank-line-framed
+    # line(s) (the normal style) leaves exactly the single "\n\n" ordinary
+    # separator behind -- not the double gap you'd get from the blank
+    # line before *and* the blank line after both surviving untouched.
+    text = re.sub(r"\n?/\*.*?\*/\n?", "", text, flags=re.DOTALL)
     text = re.sub(r"\[\[.*?\]\]", "", text, flags=re.DOTALL)
     lines = text.split("\n")
     metadata = {}
@@ -878,6 +1158,24 @@ def from_fountain(text):
     # instead of ACTION. `blank_before` (true at the very start of the
     # document too) restores that spec rule.
     blank_before = True
+    # Counts the current run of consecutive blank source lines. A single
+    # blank line is just Fountain's ordinary element separator -- the one
+    # to_fountain() always writes after every non-glued element -- so it
+    # carries no meaning of its own and is intentionally NOT stored in the
+    # buffer (this is what keeps a freshly-imported file's PDF export at
+    # clean industry-standard spacing). But a *longer* run is the writer's
+    # own deliberate extra spacing in the editor (e.g. leaving 10 blank
+    # lines between two action beats while drafting), and previously that
+    # distinction was lost entirely: every run, of any length, collapsed to
+    # nothing. That's what made spacing added in the editor vanish the
+    # moment the file was reopened, even though to_fountain() had faithfully
+    # written it to disk on save -- the save was fine, the *next* read threw
+    # it away. Now every blank line beyond the first in a run becomes one
+    # {"action", ""} buffer entry, restoring exactly the extra spacing the
+    # writer added (round-tripping cleanly with to_fountain(), which writes
+    # one "" per such entry) without changing what a single ordinary
+    # separator does.
+    blank_run = 0
     for raw in lines[i:]:
         s = raw.strip()
         if not s:
@@ -893,7 +1191,12 @@ def from_fountain(text):
             # DIALOGUE line should be treated as continuing dialogue.
             prev_type = None
             blank_before = True
+            blank_run += 1
             continue
+
+        if blank_run > 1:
+            buffer.extend({"type": "action", "text": ""} for _ in range(blank_run - 1))
+        blank_run = 0
 
         is_shout = s.isupper() and not s.endswith((".", "!", "?"))
 
@@ -1341,9 +1644,18 @@ def _apply_pdf_font_config(pdf_cfg, d):
             "Courier", "Courier-Bold", "Courier-Oblique")
 
 
+PDF_SEMIBOLD_OFFSET = 0.3  # pt -- hairline double-strike offset, see _draw_styled_row()
+
+
 def _pdf_font_for_style(style):
     if style == "bold":
         return PDF_FONT_BOLD
+    if style == "semibold":
+        # No dedicated semibold weight ships with Courier Prime (or base-14
+        # Courier), so "semibold" text is still measured/drawn in the
+        # regular weight -- _draw_styled_row() fakes the extra heft with a
+        # hairline double-strike rather than switching fonts.
+        return PDF_FONT
     if style == "italic":
         return PDF_FONT_ITALIC
     return PDF_FONT
@@ -1352,7 +1664,13 @@ def _pdf_font_for_style(style):
 def _draw_styled_row(c, row, x, y, size, right_align=False):
     """Draw one styled_wrap() row (list of (substr, style) pieces),
     switching fonts per piece so bold/italic render as real Courier-Bold/
-    Courier-Oblique instead of plain text. Returns nothing; draws in place."""
+    Courier-Oblique instead of plain text. "semibold" pieces stay in the
+    regular font but get struck twice with a sub-point horizontal offset --
+    a standard faux-bold trick that thickens strokes just enough to read as
+    heavier than plain text without the full weight of true Courier-Bold
+    (used for CHARACTER cues, which are conventionally bolder than dialogue
+    but shouldn't compete visually with scene headings/transitions, which
+    stay true bold). Returns nothing; draws in place."""
     if right_align:
         total = sum(c.stringWidth(s, _pdf_font_for_style(st), size) for s, st in row)
         x = x - total
@@ -1361,6 +1679,8 @@ def _draw_styled_row(c, row, x, y, size, right_align=False):
         font = _pdf_font_for_style(style)
         c.setFont(font, size)
         c.drawString(cx, y, substr)
+        if style == "semibold":
+            c.drawString(cx + PDF_SEMIBOLD_OFFSET, y, substr)
         cx += c.stringWidth(substr, font, size)
 
 
@@ -1479,7 +1799,7 @@ def _dual_column_rows(buffer, i, end):
         ln = buffer[idx]
         if ln["type"] == "character":
             out.append(("character", [(ln["text"].upper(),
-                                        "bold" if PDF_CHARACTER_BOLD else None)]))
+                                        "semibold" if PDF_CHARACTER_BOLD else None)]))
         elif ln["type"] == "parenthetical":
             body = ln["text"] if ln["text"].startswith("(") else f"({ln['text']})"
             rows = _forced_style(
@@ -1621,7 +1941,227 @@ def paginate_buffer(buffer):
     return starts, page
 
 
-def export_pdf(path, metadata, buffer, scene_numbers=True):
+def scene_bounds(buffer):
+    """List of (start_idx, end_idx_exclusive) for every scene in `buffer`,
+    in scene order (1-based externally, matching :scenes/scene_number_at).
+    A scene is a HEADING line plus everything up to (not including) the
+    next HEADING. Anything before the first heading has no scene number
+    and is never included by scene/character PDF filtering below."""
+    heads = [i for i, ln in enumerate(buffer) if ln["type"] == "heading"]
+    bounds = []
+    for n, start in enumerate(heads):
+        end = heads[n + 1] if n + 1 < len(heads) else len(buffer)
+        bounds.append((start, end))
+    return bounds
+
+
+def sides_export_settings(cfg):
+    """Resolve cfg["sides"] against the defaults, tolerating a partial or
+    missing section (old configs on disk, or a bare {}/None passed from a
+    test) exactly like character_export_settings() does. Returns a plain
+    dict with every [sides] key present."""
+    default = DEFAULT_CONFIG["sides"]
+    sides = (cfg or {}).get("sides", {}) if cfg is not None else {}
+    resolved = dict(default)
+    resolved.update(sides or {})
+    return resolved
+
+
+def default_sides_title(sides_cfg, *, start=None, end=None, name=None):
+    """Auto-generated Title for a scoped ":pdf" export, used when the
+    title prompt is left blank (or skipped via sides.prompt_title =
+    false). Pass either `name` (a ":pdf char NAME" export) or `start`/
+    `end` (a scene-range export) -- never both.
+    """
+    if name is not None:
+        return sides_cfg["character_title_format"].format(name=name)
+    if start == end:
+        return sides_cfg["title_format_single"].format(start=start, end=end)
+    return sides_cfg["title_format"].format(start=start, end=end)
+
+
+def sides_excerpt_subtitle(script_title, sides_cfg):
+    """The small "(an excerpt from ...)" line drawn under a scoped
+    export's title, or None if sides.excerpt_note is off or the script
+    itself has no title to excerpt from -- e.g. an imported .fountain
+    file that never had a title page, where self.metadata is {} and
+    there's nothing to name (see do_export_pdf())."""
+    if not sides_cfg.get("excerpt_note", True):
+        return None
+    script_title = (script_title or "").strip()
+    if not script_title:
+        return None
+    return sides_cfg["excerpt_format"].format(title=script_title)
+
+
+def character_export_settings(cfg):
+    """Resolve cfg["character_export"] against the defaults, tolerating a
+    partial or missing section (old configs on disk, or a bare {} passed
+    from a test) exactly like the rest of apply_runtime_config() does.
+    Returns (search_in: set[str], aliases: dict[str, list[str]]).
+    """
+    ce_default = DEFAULT_CONFIG["character_export"]
+    ce = (cfg or {}).get("character_export", ce_default) if cfg is not None else ce_default
+    search_in = set(ce.get("search_in", ce_default["search_in"]))
+    aliases = ce.get("aliases", ce_default["aliases"]) or {}
+    return search_in, aliases
+
+
+def names_for_character(name, aliases):
+    """The uppercased set of names to search for when resolving `name`
+    against `character_export.aliases`: `name` itself, plus every other
+    name in whichever alias group it belongs to. Lookup works from either
+    side -- `:pdf char Danny` (the canonical CHARACTER-cue name, an alias
+    key) and `:pdf char Dan` (one of its configured nicknames, an alias
+    value) both resolve to the same {DANNY, DAN} group, so it doesn't
+    matter which name you actually type at the prompt.
+    """
+    name_u = name.strip().upper()
+    names = {name_u} if name_u else set()
+    for key, alist in (aliases or {}).items():
+        key_u = key.strip().upper()
+        group = {key_u} | {a.strip().upper() for a in (alist or []) if a.strip()}
+        if name_u in group:
+            names.update(group)
+    return names
+
+
+def scenes_matching_character(buffer, name, cfg=None):
+    """1-based scene numbers (see scene_bounds()) where `name` (or one of
+    its configured aliases, see names_for_character()) speaks -- a
+    CHARACTER cue whose base name (extension like "(V.O.)" stripped, see
+    split_character_cue()) matches -- or is mentioned in one of the line
+    types listed in cfg["character_export"]["search_in"] (ACTION and
+    DIALOGUE by default). Matching is case-insensitive and whole-word
+    only (a search for "AL" doesn't match "ALWAYS" or hit inside "ALEX"),
+    so a short or common name doesn't pull in unrelated scenes.
+
+    Searching DIALOGUE (on by default) is what gives a scoped export full
+    context even when the requested character never appears in a scene
+    themselves: if some *other* character's line mentions them by name
+    (or by an alias, lowercase, mixed case, mid-sentence -- anything that
+    still matches as a whole word), that scene is included too. Prose
+    line types beyond CHARACTER cues are searched because a character can
+    also appear in a scene with no dialogue of their own at all, and
+    :rename deliberately does NOT touch prose (see its docstring /
+    Limitations in REFERENCE.md), so this has to do its own scan rather
+    than reusing that matcher.
+
+    cfg=None uses the built-in defaults (search ACTION + DIALOGUE, no
+    aliases) -- callers with a loaded config should pass it so
+    user-configured search_in/aliases are honored.
+    """
+    search_in, aliases = character_export_settings(cfg)
+    names = names_for_character(name, aliases)
+    if not names:
+        return set()
+    word_res = [re.compile(r'\b' + re.escape(n) + r'\b') for n in names]
+    bounds = scene_bounds(buffer)
+    matches = set()
+    for scene_no, (start, end) in enumerate(bounds, start=1):
+        for i in range(start, end):
+            ln = buffer[i]
+            t = ln["type"]
+            if t == "character":
+                base, _ext = split_character_cue(ln["text"])
+                if base.strip().upper() in names:
+                    matches.add(scene_no)
+                    break
+            elif t in search_in:
+                text_u = ln["text"].upper()
+                if any(wr.search(text_u) for wr in word_res):
+                    matches.add(scene_no)
+                    break
+    return matches
+
+
+def buffer_for_scenes(buffer, scene_numbers):
+    """A new buffer (line dicts shallow-copied, never the originals --
+    export_pdf must not see mutations bleed back into the live document)
+    containing only the given 1-based scene numbers, in scene order
+    regardless of the order `scene_numbers` was given in. Each kept
+    HEADING line carries its *original* scene number under
+    "_export_scene_no" so export_pdf() can stamp that instead of a
+    position-in-the-subset count -- a sides PDF for scenes 4, 9, and 12
+    should still say "4", "9", "12" in the margin, not "1", "2", "3",
+    since that's the number continuity/AD sheets and the rest of the cast
+    already reference.
+    """
+    bounds = scene_bounds(buffer)
+    out = []
+    for scene_no in sorted(n for n in scene_numbers if 1 <= n <= len(bounds)):
+        start, end = bounds[scene_no - 1]
+        for i in range(start, end):
+            ln = dict(buffer[i])
+            ln.pop("_wrap_cache", None)
+            if ln["type"] == "heading":
+                ln["_export_scene_no"] = scene_no
+            out.append(ln)
+    return out
+
+
+def parse_pdf_scope(arg):
+    """Parse the optional scope prefix off a ':pdf' argument.
+
+    Returns (scene_numbers, path_arg):
+    - scene_numbers: a set of 1-based scene numbers to restrict the
+      export to, or None for "no scene/character filter, export
+      everything" (the plain ':pdf' / ':pdf PATH' case).
+    - path_arg: whatever's left over to hand to the existing path
+      resolution in do_export_pdf() -- None if nothing followed the
+      scope.
+
+    Recognized scopes (case-insensitive keywords, everything else is
+    passed straight through as a path exactly like before so old
+    ':pdf ~/Desktop/draft.pdf' usage is untouched):
+
+        :pdf 5                    -> just scene 5
+        :pdf 1-10                 -> scenes 1 through 10
+        :pdf 1-10 ~/sides.pdf     -> scenes 1-10, to that path
+        :pdf char VIKRANTH        -> every scene VIKRANTH is in
+        :pdf char "OLD MAN" out.pdf
+        :pdf character VIKRANTH   -> "character" also accepted
+
+    `scene_numbers` is a set of scene numbers, not yet resolved against
+    the actual document (a name/range that matches nothing is reported
+    by the caller, not here -- this function only parses the grammar).
+    """
+    if not arg or not arg.strip():
+        return None, None
+    try:
+        tokens = shlex.split(arg)
+    except ValueError:
+        tokens = arg.split()
+    if not tokens:
+        return None, None
+
+    head = tokens[0].lower()
+    if head in ("char", "character"):
+        if len(tokens) < 2:
+            return "char:usage", None
+        name = tokens[1]
+        path = tokens[2] if len(tokens) > 2 else None
+        return ("char", name), path
+
+    range_m = re.fullmatch(r'(\d+)-(\d+)', tokens[0])
+    single_m = re.fullmatch(r'\d+', tokens[0])
+    if range_m:
+        lo, hi = int(range_m.group(1)), int(range_m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        path = tokens[1] if len(tokens) > 1 else None
+        return set(range(lo, hi + 1)), path
+    if single_m:
+        path = tokens[1] if len(tokens) > 1 else None
+        return {int(tokens[0])}, path
+
+    # Doesn't match any scope keyword/pattern -- the whole arg is a path,
+    # exactly like every ':pdf' call before scoping existed.
+    return None, arg
+
+
+def export_pdf(path, metadata, buffer, scene_numbers=True, cover_page=True,
+                subtitle=None):
     """Render `buffer` to an industry-formatted PDF at `path`.
 
     scene_numbers: stamp each scene heading's number (matching the
@@ -1631,6 +2171,19 @@ def export_pdf(path, metadata, buffer, scene_numbers=True):
     these numbers live -- carrying them into the PDF is what production
     ("locked") scripts actually look like, not just an aesthetic add-on.
     Pass False for a clean draft PDF with no margin numbers.
+
+    cover_page: master on/off for the title page, independent of whether
+    `metadata` has anything in it. Off means never draw one, full stop --
+    for the "I never want a cover page, ever" case (general.cover_page in
+    config), as distinct from prompt_missing_titlepage's "ask once if
+    there's nothing to put on one" case, which is about the prompt, not
+    the page itself.
+
+    subtitle: an optional small-font line drawn just under the title --
+    used by do_export_pdf()'s scoped (sides/character) exports for the
+    "(an excerpt from ...)" note (see sides_excerpt_subtitle()). None
+    (the default) draws nothing extra and leaves the title page laid out
+    exactly as it always has been.
     """
     if not HAVE_REPORTLAB:
         raise RuntimeError("reportlab is not installed (pip install reportlab)")
@@ -1657,13 +2210,23 @@ def export_pdf(path, metadata, buffer, scene_numbers=True):
     bottom_y = PDF_BOTTOM_Y
 
     # Title page
-    if metadata:
+    if cover_page and metadata:
         c.setFont(PDF_FONT, size)
         title = metadata.get("Title", "Untitled")
+        title_y = page_h * 0.55
         c.setFont(PDF_FONT, 16)
-        c.drawCentredString(page_w / 2, page_h * 0.55, title.upper())
+        c.drawCentredString(page_w / 2, title_y, title.upper())
+        if subtitle:
+            # Small italic note under the title (e.g. "(an excerpt from
+            # ...)" on a sides/character export) -- kept in its own font
+            # size well below the 16pt title so it reads as a caption,
+            # not a second title.
+            c.setFont(_pdf_font_for_style("italic"), 9)
+            c.drawCentredString(page_w / 2, title_y - 20, subtitle)
+            y = title_y - 20 - 24
+        else:
+            y = title_y - 40
         c.setFont(PDF_FONT, size)
-        y = page_h * 0.55 - 40
         author = metadata.get("Author", "")
         if author:
             c.drawCentredString(page_w / 2, y, f"by {author}")
@@ -1788,7 +2351,13 @@ def export_pdf(path, metadata, buffer, scene_numbers=True):
                 new_page()
             if scene_numbers:
                 c.setFont(PDF_FONT, size)
-                label = str(scene_count)
+                # A scoped export (see buffer_for_scenes()) tags each kept
+                # heading with the scene number it had in the *full*
+                # script -- stamp that instead of scene_count (this
+                # subset's own position), so a sides PDF for scenes
+                # 4/9/12 is still labeled "4"/"9"/"12", matching what the
+                # rest of the cast and crew are working from.
+                label = str(ln.get("_export_scene_no", scene_count))
                 # Locked/production scripts traditionally stamp the scene
                 # number in both margins so it's visible whether you're
                 # scanning from the left or right edge of a physical page.
@@ -1807,7 +2376,7 @@ def export_pdf(path, metadata, buffer, scene_numbers=True):
         elif t == "character":
             current_character = txt
             has_character = True
-            rows = [[(txt.upper(), "bold" if PDF_CHARACTER_BOLD else None)]]
+            rows = [[(txt.upper(), "semibold" if PDF_CHARACTER_BOLD else None)]]
             x = character_left
             right_align = False
         elif t == "parenthetical":
@@ -1848,8 +2417,9 @@ def export_pdf(path, metadata, buffer, scene_numbers=True):
                     c.setFont(PDF_FONT, size)
                     c.drawString(dialogue_left, y, "(MORE)")
                     new_page()
-                    c.setFont(PDF_FONT_BOLD if PDF_CHARACTER_BOLD else PDF_FONT, size)
-                    c.drawString(character_left, y, f"{current_character.upper()} (CONT'D)")
+                    cont_row = [(f"{current_character.upper()} (CONT'D)",
+                                 "semibold" if PDF_CHARACTER_BOLD else None)]
+                    _draw_styled_row(c, cont_row, character_left, y, size)
                     y -= leading
         else:
             for row in rows:
@@ -1945,10 +2515,18 @@ def safe_addstr(stdscr, y, x, s, attr=0):
         pass
 
 
-def prompt_line(stdscr, y, x, label):
-    """Simple single-line text input with backspace support."""
+def prompt_line(stdscr, y, x, label, initial=""):
+    """Simple single-line text input with backspace support.
+
+    `initial` seeds the field with existing text (cursor at the end) so a
+    prompt can be used to *edit* a value, not just type one from scratch
+    -- e.g. :cover re-editing an already-filled-in cover page. Plain Enter
+    with no changes returns `initial` unmodified; backspacing it away and
+    hitting Enter returns "" (clears the field), same as never typing
+    anything for a blank prompt.
+    """
     curses.curs_set(1)
-    text = ""
+    text = initial
     h, w = stdscr.getmaxyx()
     while True:
         safe_addstr(stdscr, y, x, " " * (w - x - 1))
@@ -2029,16 +2607,44 @@ def confirm_recovery(stdscr, recovery_path):
 
 
 def new_file_metadata(stdscr, cfg,
-                       heading="New Screenplay  (leave blank + Enter to skip)"):
+                       heading="New Screenplay  (leave blank + Enter to skip)",
+                       initial=None):
+    """Prompt for each configured cover-page field and return the ones the
+    user actually filled in.
+
+    `initial` (dict, e.g. an existing Editor.metadata) prefills each field
+    with its current value so the prompt doubles as an editor, not just a
+    from-scratch form -- used by :cover. A field prefilled and left
+    unedited round-trips as-is; a field prefilled and backspaced empty is
+    dropped, same as never filling in a blank one.
+    """
     stdscr.clear()
     fields = cfg["prompts"]["fields"]
+    initial = initial or {}
     safe_addstr(stdscr, 1, 2, heading, curses.A_BOLD)
     metadata = {}
     for i, field_name in enumerate(fields):
-        val = prompt_line(stdscr, 3 + i, 2, field_name)
+        val = prompt_line(stdscr, 3 + i, 2, field_name,
+                           initial=initial.get(field_name, ""))
         if val:
             metadata[field_name] = val
     return metadata
+
+
+def prompt_sides_title(stdscr, heading):
+    """Ask for a single custom Title for a scoped (sides/character) PDF
+    export. Unlike new_file_metadata() -- which loops over every field in
+    cfg["prompts"]["fields"] -- this only ever asks for the one Title
+    field: a sides export keeps the rest of the cover page (Author,
+    Contact, ...) as whatever's already set on the full script, see
+    do_export_pdf(). Leaving it blank + Enter returns "", which
+    do_export_pdf() takes as "auto-generate one instead."
+    """
+    stdscr.clear()
+    safe_addstr(stdscr, 1, 2, heading, curses.A_BOLD)
+    title = prompt_line(stdscr, 3, 2, "Title")
+    stdscr.clear()
+    return title.strip()
 
 
 def fuzzy_match(query, text):
@@ -2506,6 +3112,10 @@ class Editor:
                     "plus ones you've used. Press Tab again to cycle."),
             ("Esc", "Return to NORMAL mode"),
             ("", None),
+            ("INLINE STYLING (typed directly into ACTION/DIALOGUE/etc. text)", None),
+            ("*text*", "Italic (real Courier-Oblique in the exported PDF)"),
+            ("**text**", "Bold (real Courier-Bold in the exported PDF)"),
+            ("", None),
             ("SET ELEMENT TYPE (COMMAND mode, e.g. type ':a' + Enter)", None),
             (f":{kb['heading']}", "Scene heading (INT./EXT. ...)"),
             (f":{kb['action']}", "Action"),
@@ -2540,6 +3150,16 @@ class Editor:
             (":o", "Open a different screenplay (browse/filter/type a "
                     "path, same picker as [o] at the start menu)"),
             (":pdf [path]", "Export to PDF"),
+            (":pdf N", "Sides: export just scene N"),
+            (":pdf N-M", "Sides: export scenes N through M"),
+            (":pdf char NAME", "Sides: export every scene NAME appears in "
+                                "(quote multi-word names). 'character' also "
+                                "works. Add a path after NAME/range to save "
+                                "somewhere specific."),
+            (":cover", "(Re-)fill in the cover page fields (Title, Author, "
+                        "...) prefilled with whatever's already set. Runs "
+                        "again every time -- unlike the one-off prompt "
+                        ":pdf offers when a script has none at all."),
             (":help", "This screen"),
         ]
 
@@ -2551,7 +3171,7 @@ class Editor:
             h, w = self.stdscr.getmaxyx()
             body_h = h - 3
             safe_addstr(self.stdscr, 0, 2,
-                        "SCRIPTEE HELP  (j/k or arrows to scroll, Esc/q to close)",
+                        "SCRIPTEE HELP  (j/k, arrows, or PgUp/PgDn to scroll, Esc/q to close)",
                         curses.A_BOLD | self.pairs.get("accent", 0))
             top = max(0, min(top, max(0, len(rows) - body_h)))
             visible = rows[top: top + body_h]
@@ -2711,12 +3331,10 @@ class Editor:
             self.cx = min(len(line["text"]), self.cx + 1)
             return
         if ch == self.key("move_down"):
-            self.cy = min(len(self.buffer) - 1, self.cy + 1)
-            self.cx = min(self.cx, len(self.buffer[self.cy]["text"]))
+            self._move_visual_row(1)
             return
         if ch == self.key("move_up"):
-            self.cy = max(0, self.cy - 1)
-            self.cx = min(self.cx, len(self.buffer[self.cy]["text"]))
+            self._move_visual_row(-1)
             return
         if ch == self.key("delete_char"):
             self.snapshot()
@@ -2744,6 +3362,55 @@ class Editor:
             else:
                 self.pending_key = "delete_line"
             return
+
+    def _move_visual_row(self, delta):
+        """Move the cursor one *visual* (wrapped) row up (delta=-1) or
+        down (delta=+1) -- staying inside the current logical line if it
+        has another wrapped row in that direction, and only crossing into
+        the next/previous logical line once the current one's rows are
+        exhausted.
+
+        Before this, "down"/"up" just did cy += delta -- always jumping
+        straight to the next *logical* buffer entry regardless of how
+        many rows the current line wrapped to. A two-row ACTION line's
+        second row was never a landing spot for j/k or the arrow keys at
+        all: pressing down from the first row jumped clean over it into
+        whatever came next (often a much shorter CHARACTER/DIALOGUE
+        line), which is also what made further typing right after land
+        somewhere other than where it visually looked like the cursor
+        was.
+
+        Horizontal position is preserved by *visual column* (using
+        cursor_position()/raw_cx_for_visual(), the same row/col math
+        render() itself uses to draw the terminal cursor), not raw
+        character offset -- so moving down from column 12 of a wrapped
+        row lands on column 12 of the next row (clamped to its length),
+        the way any normal text editor's up/down does.
+        """
+        line = self.buffer[self.cy]
+        width = WRAP_WIDTH.get(line["type"], 60)
+        row, col = cursor_position(line, width, self.cx)
+        n_rows = len(wrapped_lines_for(line, width))
+        target_row = row + delta
+
+        if 0 <= target_row < n_rows:
+            # Another wrapped row of this same logical line -- land there.
+            self.cx = raw_cx_for_visual(line, width, target_row, col)
+            return
+
+        new_cy = self.cy + delta
+        if new_cy < 0 or new_cy >= len(self.buffer):
+            return  # already at the very top/bottom of the document
+        self.cy = new_cy
+        new_line = self.buffer[self.cy]
+        new_width = WRAP_WIDTH.get(new_line["type"], 60)
+        new_rows = wrapped_lines_for(new_line, new_width)
+        # Moving down lands on the new line's *first* row; moving up
+        # lands on its *last* row -- exactly like moving up/down through
+        # a wrapped paragraph in any other editor, rather than always
+        # landing on row 0 regardless of direction.
+        landing_row = 0 if delta > 0 else len(new_rows) - 1
+        self.cx = raw_cx_for_visual(new_line, new_width, landing_row, col)
 
     # -- insert mode -----------------------------------------------------
     def handle_insert(self, ch):
@@ -2790,12 +3457,10 @@ class Editor:
             self.cx = min(len(t), self.cx + 1)
             return
         if ch == curses.KEY_UP:
-            self.cy = max(0, self.cy - 1)
-            self.cx = min(self.cx, len(self.buffer[self.cy]["text"]))
+            self._move_visual_row(-1)
             return
         if ch == curses.KEY_DOWN:
-            self.cy = min(len(self.buffer) - 1, self.cy + 1)
-            self.cx = min(self.cx, len(self.buffer[self.cy]["text"]))
+            self._move_visual_row(1)
             return
         if is_printable_char(ch):
             line["text"] = t[: self.cx] + chr(ch) + t[self.cx:]
@@ -3003,6 +3668,9 @@ class Editor:
         if head == "pdf":
             self.do_export_pdf(arg)
             return
+        if head == "cover":
+            self.do_cover_prompt()
+            return
         if head == "rename":
             # shlex.split() (not a plain str.split()) so multi-word names
             # can be quoted, e.g. :rename "OLD MAN" "YOUNG MAN" -- a bare
@@ -3185,15 +3853,36 @@ class Editor:
         record_recent_file(p)
 
     def do_export_pdf(self, arg=None):
+        cover_enabled = self.cfg["general"].get("cover_page", True)
+
+        # Scoped exports -- ":pdf 1-10", ":pdf 5", ":pdf char NAME" -- see
+        # parse_pdf_scope()'s docstring for the full grammar. `scope` is
+        # either None (no filter, the plain ':pdf'/':pdf PATH' case),
+        # "char:usage" (a malformed "char" scope), or the resolved data
+        # needed to build the filtered buffer below. Parsed up front (and
+        # not just the None-check) so the "no title page in this file"
+        # prompt right below can tell a scoped export apart from a plain
+        # one -- a sides/character export gets its own dedicated title
+        # prompt further down instead, so it isn't asked twice.
+        scope, path_arg = parse_pdf_scope(arg)
+        if scope == "char:usage":
+            self.status = 'Usage: :pdf char NAME  (quote multi-word names, e.g. :pdf char "OLD MAN")'
+            return
+
         # export_pdf() only adds a title page when metadata is non-empty
-        # (see its own "if metadata:" check) -- a Fountain file imported
-        # from elsewhere that never had a title page loads with metadata
-        # == {}, so without this the PDF would silently come out with no
-        # cover page at all. Ask once, using the same fields/prompt [n]ew
-        # screenplays already get; leaving every field blank is treated as
-        # "no cover page, on purpose" and isn't asked again this session
-        # (see _title_prompt_shown).
-        if (not self.metadata and not self._title_prompt_shown
+        # (see its own "if cover_page and metadata:" check) -- a Fountain
+        # file imported from elsewhere that never had a title page loads
+        # with metadata == {}, so without this the PDF would silently come
+        # out with no cover page at all. Ask once, using the same
+        # fields/prompt [n]ew screenplays already get; leaving every field
+        # blank is treated as "no cover page, on purpose" and isn't asked
+        # again this session (see _title_prompt_shown). Skipped entirely
+        # if cover pages are turned off in config -- no point prompting
+        # for a page that won't be drawn either way -- and skipped for a
+        # scoped export, which never uses this prompt/these fields (see
+        # the sides-title prompt below instead).
+        if (scope is None and cover_enabled and not self.metadata
+                and not self._title_prompt_shown
                 and self.cfg["general"].get("prompt_missing_titlepage", True)):
             self._title_prompt_shown = True
             probed = new_file_metadata(
@@ -3204,32 +3893,140 @@ class Editor:
             if probed:
                 self.metadata = probed
                 self.dirty = True
+
+        export_buffer = self.buffer
+        scope_suffix = ""
+        sides_kind = None   # None | "range" | "char" -- which title to build below
+        char_name = None
+        lo = hi = None
+        if scope is not None:
+            if isinstance(scope, tuple) and scope[0] == "char":
+                name = scope[1]
+                wanted = scenes_matching_character(self.buffer, name, self.cfg)
+                if not wanted:
+                    search_in, aliases = character_export_settings(self.cfg)
+                    names = names_for_character(name, aliases)
+                    checked = ", ".join(["CHARACTER cues"] +
+                                         [t.upper() for t in sorted(search_in)])
+                    alias_note = ""
+                    if len(names) > 1:
+                        others = sorted(names - {name.strip().upper()})
+                        alias_note = f" (aliases checked: {', '.join(others)})"
+                    self.status = (f"No scenes found for '{name.strip().upper()}'"
+                                    f"{alias_note} (checked {checked}).")
+                    return
+                export_buffer = buffer_for_scenes(self.buffer, wanted)
+                scope_suffix = f"_{self.safe_filename(name)}"
+                sides_kind = "char"
+                char_name = name.strip()
+            else:
+                total_scenes = len(scene_bounds(self.buffer))
+                in_range = {n for n in scope if 1 <= n <= total_scenes}
+                if not in_range:
+                    lo, hi = min(scope), max(scope)
+                    label = str(lo) if lo == hi else f"{lo}-{hi}"
+                    self.status = (f"No scene(s) {label} -- this script only has "
+                                    f"{total_scenes} scene(s).")
+                    return
+                export_buffer = buffer_for_scenes(self.buffer, in_range)
+                lo, hi = min(in_range), max(in_range)
+                scope_suffix = f"_scenes_{lo}" if lo == hi else f"_scenes_{lo}-{hi}"
+                sides_kind = "range"
+
+        # A scoped export's own title page -- see [sides] in the config
+        # reference. Independent of general.cover_page/metadata: a sides
+        # or character-draft PDF still gets a title page (naming the
+        # scene range or character, plus an "(an excerpt from ...)" note
+        # pointing back at the full script) even for a title-page-less
+        # import, since sides_metadata always ends up with a Title of its
+        # own regardless of what self.metadata has.
+        sides_metadata = None
+        sides_subtitle = None
+        sides_cover_enabled = False
+        if sides_kind is not None:
+            sides_cfg = sides_export_settings(self.cfg)
+            sides_cover_enabled = bool(sides_cfg.get("cover_page", True))
+            if sides_cover_enabled:
+                sides_title = ""
+                if sides_cfg.get("prompt_title", True):
+                    if sides_kind == "char":
+                        heading = (f"Sides title for {char_name.upper()}  "
+                                   "(leave blank + Enter to auto-generate)")
+                    else:
+                        label = str(lo) if lo == hi else f"{lo}-{hi}"
+                        heading = (f"Sides title for scene(s) {label}  "
+                                   "(leave blank + Enter to auto-generate)")
+                    sides_title = prompt_sides_title(self.stdscr, heading)
+                if not sides_title:
+                    sides_title = default_sides_title(
+                        sides_cfg, start=lo, end=hi,
+                        name=char_name if sides_kind == "char" else None)
+                sides_metadata = dict(self.metadata)  # keep the rest (Author, ...) as-is
+                sides_metadata["Title"] = sides_title
+                sides_subtitle = sides_excerpt_subtitle(
+                    self.metadata.get("Title", ""), sides_cfg)
+
         try:
-            if arg:
-                p = Path(os.path.expanduser(arg))
+            if path_arg:
+                p = Path(os.path.expanduser(path_arg))
             elif self.filepath:
-                p = Path(self.filepath).with_suffix(".pdf")
+                p = Path(self.filepath).with_suffix("")
+                p = p.with_name(p.name + scope_suffix + ".pdf")
             else:
                 save_dir = Path(os.path.expanduser(self.cfg["general"]["save_dir"]))
                 safe_title = self.safe_filename(self.metadata.get("Title", "untitled"))
-                p = save_dir / f"{safe_title}.pdf"
+                p = save_dir / f"{safe_title}{scope_suffix}.pdf"
             scene_numbers = self.cfg["general"].get("pdf_scene_numbers", True)
-            export_pdf(p, self.metadata, self.buffer, scene_numbers=scene_numbers)
+            if sides_kind is not None:
+                export_pdf(p, sides_metadata or {}, export_buffer,
+                           scene_numbers=scene_numbers,
+                           cover_page=sides_cover_enabled,
+                           subtitle=sides_subtitle)
+            else:
+                export_pdf(p, self.metadata, export_buffer,
+                           scene_numbers=scene_numbers,
+                           cover_page=cover_enabled)
             self.status = f"Exported PDF: {p}"
             if PDF_FONT_WARNING:
                 self.status += f" ({PDF_FONT_WARNING})"
         except Exception as e:
             self.status = f"PDF export failed: {e}"
 
+    def do_cover_prompt(self):
+        """:cover -- (re-)ask the cover-page fields on demand, prefilled
+        with whatever's already set, then drop back into the screenplay.
+
+        Unlike do_export_pdf()'s own one-shot auto-prompt (which only
+        fires once per session, see _title_prompt_shown), this is a
+        manual command: it resets that one-shot state and shows the
+        prompt every single time it's run, however many times that is.
+        """
+        self._title_prompt_shown = False
+        probed = new_file_metadata(
+            self.stdscr, self.cfg,
+            heading="Cover Page  (Enter keeps a value, clear it + Enter removes it)",
+            initial=self.metadata)
+        self.stdscr.clear()
+        if probed != self.metadata:
+            self.metadata = probed
+            self.dirty = True
+        if not self.cfg["general"].get("cover_page", True):
+            self.status = ("Cover page saved, but general.cover_page = false "
+                            "in config -- :pdf exports won't include one.")
+        elif probed:
+            self.status = "Cover page updated."
+        else:
+            self.status = "Cover page cleared -- :pdf will export with no cover page."
+
     # -- word / page estimate --------------------------------------------
     PAGE_ESTIMATE_REFRESH = 0.5  # seconds
 
     def _has_title_page(self):
         """Whether export_pdf() will insert a separate title page ahead of
-        the script -- mirrors its own `if metadata:` check exactly, so the
-        TUI's page count and the exported PDF's page count always agree on
-        whether that extra page exists."""
-        return bool(self.metadata)
+        the script -- mirrors its own `if cover_page and metadata:` check
+        exactly, so the TUI's page count and the exported PDF's page count
+        always agree on whether that extra page exists."""
+        return bool(self.metadata) and self.cfg["general"].get("cover_page", True)
 
     def page_estimate(self):
         """Page count for the status bar, matching the exported PDF
