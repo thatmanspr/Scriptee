@@ -88,8 +88,22 @@ else
 fi
 
 echo "==> Installing the scriptee command to $TARGET ..."
+# Scriptee is now a small package (scriptee_pkg/) plus a thin scriptee.py
+# launcher, rather than one single file, so both need to travel together.
+# We install the whole app tree under a versioned lib dir and drop a tiny
+# wrapper script at $TARGET that just execs the real launcher -- that way
+# $TARGET still behaves like a normal single-file command on PATH.
+APP_DIR="$HOME/.local/lib/scriptee"
+mkdir -p "$APP_DIR"
+cp "$SCRIPT_DIR/scriptee.py" "$APP_DIR/"
+rm -rf "$APP_DIR/scriptee_pkg"
+cp -r "$SCRIPT_DIR/scriptee_pkg" "$APP_DIR/"
+
 mkdir -p "$INSTALL_DIR"
-cp "$SCRIPT_DIR/scriptee.py" "$TARGET"
+cat > "$TARGET" << WRAPPER_EOF
+#!/usr/bin/env bash
+exec python3 "$APP_DIR/scriptee.py" "\$@"
+WRAPPER_EOF
 chmod +x "$TARGET"
 
 echo "==> Setting up config..."
@@ -104,7 +118,7 @@ if [ ! -f ~/.config/scriptee/config.toml ]; then
     # where $FONTS_DIR ends up on your machine.
     python3 -c "
 import importlib.util
-spec = importlib.util.spec_from_file_location('scriptee_installed', '$TARGET')
+spec = importlib.util.spec_from_file_location('scriptee_installed', '$APP_DIR/scriptee.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.write_default_config()
@@ -113,13 +127,32 @@ m.write_default_config()
 else
     echo "    Existing config found, leaving it untouched."
     if [ -d "$SCRIPT_DIR/fonts" ]; then
-        echo "    NOTE: your existing config still has whatever"
-        echo "    format.pdf.font_family it had before. To switch it to the"
-        echo "    Courier Prime font just installed, set font_family = \"custom\""
-        echo "    in [format.pdf] and point custom_font.regular/bold/italic at:"
-        echo "      $FONTS_DIR/CourierPrime-Regular.ttf"
-        echo "      $FONTS_DIR/CourierPrime-Bold.ttf"
-        echo "      $FONTS_DIR/CourierPrime-Italic.ttf"
+        # upgrade_bundled_font_config() only touches the file if
+        # format.pdf.font_family + custom_font are still at their
+        # untouched "courier" / blank-paths defaults -- a config that's
+        # already been pointed at "custom" (this font or any other) is
+        # left exactly as-is. See its docstring in config.py.
+        UPGRADED=$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('scriptee_installed', '$APP_DIR/scriptee.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print('yes' if m.upgrade_bundled_font_config() else 'no')
+")
+        if [ "$UPGRADED" = "yes" ]; then
+            echo "    Pointed format.pdf.font_family / custom_font at the bundled"
+            echo "    Courier Prime (it was either still at the untouched \"courier\""
+            echo "    default, or already \"custom\" with a blank/missing font path)."
+        else
+            echo "    format.pdf's font settings are already fully pointed at real"
+            echo "    font files -- left as-is. If you ever want to switch to the"
+            echo "    Courier Prime font installed above by hand, set"
+            echo "    font_family = \"custom\" in [format.pdf] and point"
+            echo "    custom_font.regular/bold/italic at:"
+            echo "      $FONTS_DIR/CourierPrime-Regular.ttf"
+            echo "      $FONTS_DIR/CourierPrime-Bold.ttf"
+            echo "      $FONTS_DIR/CourierPrime-Italic.ttf"
+        fi
     fi
 fi
 
