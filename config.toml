@@ -4,7 +4,7 @@
 # Edit it, save, and relaunch scriptee.
 
 [general]
-save_dir = "~/Documents/Scriptee"
+save_dir = "~/Documents/Scripts"
 # Stamp each scene's number in the left/right PDF margins on :pdf export,
 # matching the numbers already shown in the editor's left gutter. Set to
 # false for a clean draft PDF with no margin numbers.
@@ -28,13 +28,13 @@ fields = ["Title", "Author", "Genre", "Year", "Contact (Number)", "Contact (Emai
 
 [sides]
 # Title page for a *scoped* ":pdf" export -- a scene range ("sides") or
-# ":pdf char NAME" (a character's draft). Independent of [general]'s
-# cover_page/prompt_missing_titlepage above, which only ever govern the
-# full-script export.
+# ":pdf char NAME" (a character's draft). Entirely independent of
+# [general]'s cover_page/prompt_missing_titlepage, which only ever
+# govern the full-script export.
 #
 # Master on/off: whether a scoped export gets a title page at all. false
 # means scene-range and character exports never draw one, no matter what
-# else is set below -- the old behavior, before this section existed.
+# else is set below.
 cover_page = true
 # Ask for a custom title before each scoped export -- just the one
 # field, not the full [prompts] fields list above, since a sides PDF
@@ -124,12 +124,16 @@ insert_before = "i"      # enter INSERT at the cursor
 insert_after = "a"       # enter INSERT just past the cursor
 open_below = "o"         # open a new line below, enter INSERT
 open_above = "O"         # open a new line above, enter INSERT
+blank_line = "N"         # insert a blank line below the cursor, stay in NORMAL
 move_left = "h"
 move_down = "j"
 move_up = "k"
 move_right = "l"
 delete_char = "x"
-delete_line = "d"        # pressed twice, vim-style ("dd")
+delete_line = "d"        # pressed twice, vim-style ("dd"); also fills the register
+yank_line = "y"          # pressed twice, vim-style ("yy") -- copies into the register
+paste_after = "p"        # paste the register as a new line below the cursor
+paste_before = "P"       # paste the register as a new line above the cursor
 undo = "u"
 redo = "r"               # held with Ctrl automatically -- i.e. Ctrl-r
 search = "/"
@@ -185,12 +189,23 @@ dialogue      = 10
 [format.pdf]
 font_size = 12
 page_size = "letter"       # "letter" or "a4"
-# "courier" uses the PDF spec's built-in base-14 Courier family -- zero
-# embedding, renders identically in every viewer. Set to "custom" and
-# fill in [format.pdf.custom_font] below to embed your own .ttf instead
-# (e.g. Courier Prime). A bad/missing path falls back to Courier
-# automatically, with a note on the :pdf status line.
-font_family = "courier"
+# "courier" uses the PDF spec's built-in base-14 Courier family (zero
+# embedding, works everywhere, and is what makes an exported PDF look
+# right in any viewer with no extra install). Set to "custom" to instead
+# embed your own TrueType font -- e.g. Courier Prime, a free font made to
+# match Courier's own character metrics but with cleaner letterforms --
+# via [format.pdf.custom_font] below. A bad or missing path silently
+# falls back to Courier with a note in the status bar after :pdf, so a
+# typo here can never break an export.
+#
+# If Scriptee's bundled Courier Prime was found at install time (see
+# fonts/ and install.sh), write_default_config() flips this to "custom"
+# and fills in custom_font below automatically -- what you see here is
+# only the safe zero-dependency fallback. Base-14 Courier's bold weight
+# in particular renders noticeably heavier/denser at 12pt than Courier
+# Prime, which is what can make a same-margins, same-leading export look
+# "cramped" next to another app's PDF even at the same page count.
+font_family = "courier"    # "courier" or "custom"
 left_edge_in = 1.5         # heading / action / shot start column
 dialogue_left_in = 2.5
 parenthetical_left_in = 2.8
@@ -200,6 +215,19 @@ top_margin_in = 1.0
 bottom_margin_in = 1.0
 # Gap between the two columns when printing dual (simultaneous) dialogue.
 dual_dialogue_gutter_in = 0.3
+
+[format.pdf.custom_font]
+# Absolute paths to .ttf files. Only used when font_family = "custom"
+# above. "regular" is required; "bold"/"italic" fall back to "regular"
+# if left blank (so a font with no distinct bold/italic weight still
+# works, just without the visual distinction bold/italic markup gives).
+# Note: column math (wrap width, dual-dialogue columns) still assumes a
+# Courier-like fixed 0.6em character advance -- an actual monospaced font
+# at that metric (Courier Prime included) lines up correctly; a
+# proportional or unusually-spaced font may not.
+regular = ""
+bold = ""
+italic = ""
 
 [format.pdf.emphasis]
 # Which elements are force-styled on :pdf export, regardless of any inline
@@ -211,10 +239,3 @@ heading_bold          = true
 character_bold        = true
 transition_bold       = true
 parenthetical_italic  = true
-
-[format.pdf.custom_font]
-# Absolute .ttf paths, only used when font_family = "custom" above.
-# bold/italic are optional and fall back to regular if left blank.
-regular = ""
-bold = ""
-italic = ""
