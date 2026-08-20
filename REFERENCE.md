@@ -8,13 +8,16 @@ see [`README.md`](README.md).
 - [Line types](#line-types)
 - [Moving between elements](#moving-between-elements)
 - [Movement & basic editing](#movement--basic-editing)
+- [Yank / paste](#yank--paste)
 - [Undo / redo](#undo--redo)
+- [Revision color-set tracking](#revision-color-set-tracking)
 - [Search](#search)
 - [Inline styling](#inline-styling)
 - [Tab autocomplete](#tab-autocomplete)
 - [`:lc` / `:lh` / `:lt` — resume the last cue](#lc--lh--lt--resume-the-last-cue)
 - [`:rename` — rename a character everywhere](#rename--rename-a-character-everywhere)
 - [`:dual` — dual (simultaneous) dialogue](#dual--dual-simultaneous-dialogue)
+- [`:version` — numbered drafts of a script](#version--numbered-drafts-of-a-script)
 - [`:scenes` / `:stats` / jumping around](#scenes--stats--jumping-around)
 - [`.` — repeat the last command](#--repeat-the-last-command)
 - [Saving, quitting, opening](#saving-quitting-opening)
@@ -28,6 +31,7 @@ see [`README.md`](README.md).
 - [Status bar: length, page, and scene numbers](#status-bar-length-page-and-scene-numbers)
 - [Config reference](#config-reference)
 - [Testing](#testing)
+- [Resource usage](#resource-usage)
 - [Limitations](#limitations)
 
 ## Install & run
@@ -40,9 +44,18 @@ scriptee
 
 `install.sh` detects your package manager (pacman, apt, dnf, zypper, apk),
 ensures Python 3 + pip are present, installs `reportlab` (needed for
-`:pdf`), writes a default config to `~/.config/scriptee/config.toml`, and
-installs `scriptee` to `~/.local/bin`. It prints the line to add to your
-shell config if `~/.local/bin` isn't already on `PATH`.
+`:pdf`), installs the bundled Courier Prime font files, writes a default
+config to `~/.config/scriptee/config.toml`, and installs `scriptee` to
+`~/.local/bin`. It prints the line to add to your shell config if
+`~/.local/bin` isn't already on `PATH`.
+
+A fresh config defaults `format.pdf.font_family` to `"custom"` and
+points it at the bundled Courier Prime, rather than the PDF spec's
+built-in base-14 Courier (see `[format.pdf]` below for the difference).
+Re-running `install.sh` against an **existing** config only flips this
+over if `font_family`/`custom_font` are still at that untouched default
+— any config that's already been pointed at a font (this one or your
+own) is left exactly as it is.
 
 ## Modes
 
@@ -116,8 +129,12 @@ Standard vim motions (remappable — see [Config](#config-reference)):
 | `a` | insert after cursor |
 | `o` | open a new line below, insert |
 | `O` | open a new line above, insert |
+| `N` | insert a blank line below the cursor, **stay in NORMAL** (no insert) |
 | `x` | delete character under cursor |
-| `dd` | delete current line (press `d` twice) |
+| `dd` | delete (cut) current line (press `d` twice) |
+| `yy` | yank (copy) current line (press `y` twice) |
+| `p` | paste the register on a new line below the cursor |
+| `P` | paste the register on a new line above the cursor |
 | `e` | unlock a file opened read-only from the shell |
 
 `j`/`k` (and the arrow keys in INSERT mode) move by visual row, not
@@ -126,11 +143,68 @@ down from the first row lands on the line's second row at the same
 column, not on the next element — only from the last row does down
 cross into the next element. Up mirrors this.
 
+`N` is the odd one out next to `o`/`O`: it opens a blank ACTION line
+below the cursor (moving you onto it) but leaves you in NORMAL instead
+of dropping into INSERT — for when you just want the spacing (e.g.
+before a new scene) without typing right away. `Enter`, in INSERT mode,
+already opens a new line of its own (see [Moving between
+elements](#moving-between-elements) above) — `N` is the NORMAL-mode
+equivalent for when you don't want to type yet.
+
+## Yank / paste
+
+`yy` copies the whole current line (element type included) into a
+single-line register; `dd` fills the same register with whatever it cuts,
+so a delete can be moved elsewhere with `p`/`P` just like a yank. `p`
+pastes as a new line below the cursor, `P` above it — always a full new
+line, never a mid-line splice. Both are one undoable step (`u` reverts
+a paste like any other edit).
+
+There's only the one register — a later `yy`/`dd` overwrites whatever
+was there before — and it holds a single line, not an arbitrary range or
+character-wise selection. No named/numbered registers (`"a`, `"1`, …)
+and nothing to grab across app restarts; it lives only in memory for
+the current session. See [Limitations](#limitations).
+
 ## Undo / redo
 
-`u` undoes the last change, `Ctrl-r` redoes it. A fresh edit after an
-undo clears the redo stack. Up to `behavior.max_undo_steps` (default
-50) steps are kept.
+`u` undoes the last change, `Ctrl-r` redoes it — undo history is a real
+*tree*, not a flat stack: undoing and then making a different edit than
+the one you undid doesn't destroy the old "future", it just becomes a
+sibling branch. Plain `u`/`Ctrl-r` always follow the branch you were
+just on (so day-to-day it feels exactly like a linear undo/redo), and
+`:undotree` opens a picker over every branch the session has forked
+into, letting you jump straight to any of them. Up to
+`behavior.max_undo_steps` (default 50) steps of *unbranched* history are
+kept — a tree with active branches can grow past that cap, since
+discarding a branch to make room is exactly what this feature exists to
+avoid.
+
+## Revision color-set tracking
+
+`:revision <color>` locks the current draft in as a new baseline and
+starts tracking every line changed from that point on — the standard
+white/blue/pink/yellow "what changed since last draft" workflow. Locked
+lines get a `*` both in the editor's left gutter and in the exported
+PDF's right margin, and every PDF page carries a small
+"`COLOR REVISION -- date`" stamp once a color's been locked.
+
+| Command | Effect |
+|---|---|
+| `:revision` | Show the current color and how many lines are marked changed |
+| `:revision <color>` | Lock the buffer as the new baseline, start tracking under `<color>` |
+| `:revision next` | Lock in the next color in the standard rotation |
+| `:revision history` | List every color locked this session |
+| `:revision off` | Clear tracking, back to White (no marks) |
+
+The standard nine-color rotation is White → Blue → Pink → Yellow →
+Green → Goldenrod → Buff → Salmon → Cherry, wrapping back to Blue after
+Cherry (White is never re-entered by `next` — it only ever means "before
+the first lock"). The current color is saved to the title page as a
+plain `Revision: <color>` field, so reopening the file resumes on the
+right color; the exact baseline to diff against for marks is
+session-only, same honest scope the undo tree and autosave already have
+— see [Limitations](#limitations).
 
 ## Search
 
@@ -199,12 +273,25 @@ Nenu osthanu.
 ```
 :rename OLD NEW
 :rename "OLD MAN" "YOUNG MAN"      (quote multi-word names)
+:rename OLD NEW --all              (also sweep ACTION/DIALOGUE prose)
 ```
 
 Sweeps every CHARACTER cue matching `OLD` (case-insensitive) to `NEW`,
 preserving any `(V.O.)`/`(CONT'D)`-style extension. One undoable step
-(`u` reverts the whole sweep). Only touches CHARACTER cues — not
-mentions of the name in ACTION prose or DIALOGUE. See
+(`u` reverts the whole sweep).
+
+By default that's *all* it touches — a mention of the name in ACTION
+prose or DIALOGUE is left alone. Add `--all` (or `-a`) to also replace
+whole-word, case-insensitive mentions of `OLD` in the same line types
+`:pdf char` searches (ACTION + DIALOGUE by default, configurable via
+`character_export.search_in` — see [Config reference](#config-reference)). Each
+prose match is reshaped to match its own capitalization — ALL CAPS stays
+ALL CAPS, "Title Case"/"Sentence case" becomes Title Case, anything else
+becomes lowercase — so a sweep doesn't leave a stray "JOHN" or "MARK"
+sitting in the middle of a sentence. That's a heuristic: unusual
+capitalization in the source can still come out wrong, so skim the
+result. `--all` does not follow `character_export.aliases` — it matches
+`OLD` literally, the same as the cue sweep. See
 [Limitations](#limitations).
 
 ## `:dual` — dual (simultaneous) dialogue
@@ -223,14 +310,60 @@ Nuvvu matladaku..
 RISHITHA           <- write this cue + its dialogue first
 Em chestav ra?
                      then, with cursor on RISHITHA's line: :dual (or D)
-                     -> both cues show a small '^' in the gutter,
-                        and :pdf prints them as two side-by-side columns.
+                     -> both cues render as two side-by-side columns,
+                        right here in the editor and in :pdf.
 ```
 
 Write the first CHARACTER+DIALOGUE block, then the second cue, then run
 `:dual`/`D` on that second cue — it pairs backward with whatever's
 directly above (blank lines OK). If there's nothing valid to pair with,
 the status bar explains why.
+
+If a pair runs long enough to hit a page break in `:pdf`, it splits
+mid-block instead of moving to a fresh page as one atomic unit:
+whichever column(s) are still mid-speech at the break get `(MORE)` at
+the foot of the page and their cue repeated with `(CONT'D)` at the top
+of the next, the same treatment single-column dialogue gets. A break
+that instead falls between cues (rather than mid-speech) just rolls
+onto a fresh page plainly, with no `(MORE)`/`(CONT'D)` — same rule
+single-column dialogue follows.
+
+## `:version` — numbered drafts of a script
+
+Branch a script into numbered sibling files (`Interlude.fountain` →
+`Interlude_v2.fountain` → `Interlude_v3.fountain`, ...) without losing
+track of earlier drafts, and move between them from inside the editor.
+Needs the current file saved at least once (`:w`) before any of this
+works — there's nothing to number yet otherwise.
+
+| Command | Does |
+|---|---|
+| `:version` | Show which version this file is, and prompt to (re)name it — Enter keeps the current label, clear + Enter removes it |
+| `:version new [label]` | Branch off a new numbered sibling file, carrying over the current buffer (including unsaved edits), and switch to editing it. The old file is left untouched. Prompts for a label if none is given; `:version n` also works. |
+| `:version switch` | Browse every version of this script — `j`/`k` move, `Enter` switches, `q`/`Esc` backs out. `:version list` also works. |
+| `:version N` | Jump straight to version `N` without the picker |
+| `:version label <name>` | Name the current version in one line, no prompt |
+
+Switching versions with unsaved changes is refused, same as `:q` — add
+`!` to override and discard them anyway, e.g. `:version 3!` or
+`:version switch!`.
+
+**Example:**
+
+```
+:w                       -> save "Interlude.fountain" first
+:version new             -> prompts for a label, then creates and
+                             switches to "Interlude_v2.fountain"
+...edit...
+:version switch          -> browse every version, Enter to jump back
+:version 1               -> or jump straight to version 1
+```
+
+Saving a brand-new file under a name that looks like another version of
+an existing one already in the same folder (e.g. saving
+`Interlude v2.fountain` next to an existing `Interlude.fountain`) asks
+whether to fold it into that version group instead of leaving two
+similarly-named standalone files sitting loose in the same directory.
 
 ## `:scenes` / `:stats` / jumping around
 
@@ -264,7 +397,13 @@ Repeated presses re-run the original command, not "repeat the repeat."
 Files save as `.fountain` — plain-text, git-diffable, readable in any
 editor, importable by other Fountain tools (Highland, Fade In,
 Slugline, ...). Default save location is `general.save_dir`
-(`~/Documents/Scriptee` out of the box).
+(`~/Documents/Scripts` out of the box). A brand-new, never-saved script
+gets its own subfolder named after its Title — e.g. a script titled
+"Interlude" saves to `~/Documents/Scripts/Interlude/Interlude.fountain`
+(and any default-location `:pdf` export lands right alongside it in the
+same folder). Once a script has a real path (saved, or opened from
+somewhere else), that path is used as-is — this only applies to picking
+a location for a script that's never been saved before.
 
 ## `:pdf` / `:cover` — PDF export
 
@@ -458,7 +597,7 @@ Edit it, save, relaunch. Every section below is a table in that file.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `save_dir` | `~/Documents/Scriptee` | Default save/open location |
+| `save_dir` | `~/Documents/Scripts` | Default save/open location (each new script gets its own `<save_dir>/<Title>/` subfolder) |
 | `pdf_scene_numbers` | `true` | Stamp scene numbers in the PDF's left margin on `:pdf` |
 | `cover_page` | `true` | Master on/off for the *full-script* PDF cover page. Scoped (sides/character) exports have their own switch — see `[sides]` below. |
 | `prompt_missing_titlepage` | `true` | Ask once for title-page fields if a full (unscoped) `:pdf` is run on a script that has none |
@@ -501,7 +640,7 @@ Controls `:pdf char NAME` / `:pdf character NAME` (see
 | Key | Default | Meaning |
 |---|---|---|
 | `autosave_interval_secs` | `15` | Seconds of unsaved editing between autosave snapshots |
-| `max_undo_steps` | `50` | Undo/redo stack depth |
+| `max_undo_steps` | `50` | Undo tree depth (unbranched history only — see [Undo / redo](#undo--redo)) |
 | `max_recent_files` | `15` | How many paths the `[o]`pen recents list remembers |
 | `esc_delay_ms` | `25` | ncurses `ESCDELAY` — how long a lone `Esc` byte waits before being treated as a real Esc rather than the start of an arrow-key sequence |
 
@@ -510,11 +649,12 @@ Controls `:pdf char NAME` / `:pdf character NAME` (see
 Every key Scriptee reads is remappable: the 7 line-type letters
 (`heading`/`action`/`character`/`dialogue`/`parenthetical`/`shot`/`transition`)
 plus bare NORMAL-mode keys — `insert_before`/`insert_after`/
-`open_below`/`open_above`, `move_left`/`move_down`/`move_up`/
-`move_right`, `delete_char`/`delete_line`, `undo`/`redo` (redo is held
-with Ctrl automatically, e.g. `r` → `Ctrl-r`), `search`/`next_match`,
-`command`, `repeat`, `jump_end`, `toggle_readonly`, `dual_dialogue`.
-`:help` always reflects your actual bindings.
+`open_below`/`open_above`/`blank_line`, `move_left`/`move_down`/`move_up`/
+`move_right`, `delete_char`/`delete_line`, `yank_line`/`paste_after`/
+`paste_before`, `undo`/`redo` (redo is held with Ctrl automatically,
+e.g. `r` → `Ctrl-r`), `search`/`next_match`, `command`, `repeat`,
+`jump_end`, `toggle_readonly`, `dual_dialogue`. `:help` always reflects
+your actual bindings.
 
 ```toml
 [keybinds]
@@ -608,23 +748,81 @@ counting, PDF scene-number stamping, scoped PDF export (`:pdf` scene
 ranges, `:pdf char`, aliases), dual-dialogue pagination/export, and core
 `Editor` key handling.
 
+## Code layout
+
+Scriptee is a package (`scriptee_pkg/`) plus a thin `scriptee.py`
+launcher at the repo root, rather than one single file. `install.sh`
+copies the whole tree (`scriptee.py`, `scriptee_pkg/`, `fonts/`) to
+`~/.local/lib/scriptee/` and puts a small wrapper script on `PATH` that
+execs the real launcher — running `python3 scriptee.py` straight out of
+a checkout also still works, same as before.
+
+| Module | Responsibility |
+|---|---|
+| `config.py` | Defaults, `config.toml` loading/merging, `apply_runtime_config()` |
+| `text_format.py` | Wrap widths/indents, inline styling, wrapped-row cursor mapping |
+| `fountain.py` | `.fountain` save/load, `TRANSITION_KEYWORDS`, character-cue parsing |
+| `stats.py` | `:stats` word/scene/character counting |
+| `recovery.py` | Autosave, crash recovery, recent-files list |
+| `pdf_geometry.py` | Page/margin/column math, font resolution |
+| `pdf_export.py` | Row drawing, pagination, `:pdf`/`:cover`/sides export |
+| `ui_helpers.py` | Low-level curses helpers (key reading, prompts) |
+| `screens.py` | Start menu, recovery prompt, open-file picker |
+| `editor.py` | The `Editor` class — the main edit loop and all `:commands` |
+| `app.py` | Startup flow and `main()` |
+
+**If you add a new module-level variable that gets reassigned at
+runtime** (as opposed to a dict/list that's only ever mutated in place
+via `.update()`/`[:] =`), every module *other* than the one that owns it
+must read it as `owning_module.NAME`, never `from owning_module import
+NAME` — a plain import copies the value once at import time and won't
+see later reassignments, whether those come from `apply_runtime_config()`
+or from a test's `monkeypatch.setattr(owning_module, "NAME", ...)`. The
+existing `config.AUTOSAVE_INTERVAL`/`config.RECOVERY_DIR` and the
+`pdf_geometry.PDF_*` constants are the pattern to follow; `WRAP_WIDTH`,
+`INDENT`, and `TRANSITION_KEYWORDS` are the counterexample — those are
+mutated in place, so plain imports of them are fine everywhere.
+
+## Resource usage
+
+Measured RSS at idle startup (start menu, before opening a file),
+averaged over several runs: **~29.6 MB**. For reference, the v1
+single-file release measured ~35.8 MB under the same conditions — the
+package split didn't add runtime weight; if anything it trimmed some.
+
 ## Limitations
 
-- Undo/redo is a flat stack (one snapshot per edit action), not a
-  branching undo tree.
-- `:rename` matches CHARACTER cues exactly — it doesn't touch a name
-  mentioned in ACTION prose or DIALOGUE. (`:pdf char` does search those,
-  independently — see [Sides](#sides--exporting-a-scene-range-or-a-single-characters-scenes).)
-- No revision color-set tracking (white/blue/pink/yellow page sets).
-- A dual-dialogue pair prints as one atomic two-column block and moves
-  to a fresh page as a whole if it doesn't fit — it never splits
-  mid-block the way single-column dialogue can with `(MORE)`/`(CONT'D)`.
-- The terminal view shows a dual-dialogue pair as two ordinary
-  single-column blocks with a `^` marker on both cues; the two-column
-  layout only appears in the exported PDF.
+- Undo history is a tree (see [Undo / redo](#undo--redo)), but the tree
+  itself only exists in memory for the current session — it doesn't
+  survive quitting Scriptee, and `max_undo_steps` pruning only ever
+  trims *unbranched* history off the far end (an actively-branching tree
+  can grow past the configured cap; see `_prune_undo_tree()`'s own
+  comment in `editor.py`).
+- Yank/paste has one register, holding at most one whole line — no
+  named/numbered registers, no character-wise or multi-line visual
+  selection, and it doesn't survive quitting Scriptee.
+- `:rename` matches CHARACTER cues exactly by default — pass `--all`
+  to also sweep name mentions in ACTION/DIALOGUE prose (see
+  [`:rename`](#rename--rename-a-character-everywhere)). (`:pdf char`
+  independently searches those line types for scoping an export — see
+  [Sides](#sides--exporting-a-scene-range-or-a-single-characters-scenes).)
+- Revision tracking (see [Revision color-set tracking](#revision-color-set-tracking))
+  saves the *current color name* to the title page (`Revision: <color>`),
+  so reopening a file resumes on the right color — but the line-by-line
+  baseline it diffs against to compute `*` marks is session-only, same
+  as the undo tree above. Reopening a file always starts marks fresh
+  from whatever's on disk; it can't reconstruct exactly which lines
+  were changed in a previous sitting after the file's been closed and
+  reopened.
 - Scene/character detection on `.fountain` import is heuristic — unusual
   formatting from a foreign file may misclassify a line; retype
-  `:h`/`:c`/etc. on the affected line to fix it.
+  `:h`/`:c`/etc. on the affected line to fix it. Fountain's own forcing
+  prefixes are recognized (`.` heading, `!` action, `>` transition, `@`
+  character — the last one also being what `:pdf`/save itself writes for
+  a CHARACTER name the plain heuristic can't round-trip on its own, e.g.
+  one 40+ chars long or ending in `.`/`!`/`?`), so a foreign file that
+  uses those is read correctly even where the plain heuristics
+  wouldn't catch it.
 - No spellcheck, no cloud sync/collaboration, and Final Draft's `.fdx`
   isn't read or written — only `.fountain`. To hand a script to someone
   on Final Draft, export to PDF, or have them import the `.fountain`
