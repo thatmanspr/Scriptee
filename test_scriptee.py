@@ -79,6 +79,60 @@ def test_from_fountain_unforced_transition_marker():
     assert buf[1]["text"] == "CUT TO:"
 
 
+def test_from_fountain_opening_fade_in_is_not_swallowed_as_title_page():
+    # Regression: "FADE IN:" (or "CUT TO:", "SUPER:", etc.) as the literal
+    # first line of a title-page-less script matches the same "Word: ..."
+    # shape as a real title-page key ("Title: ...") -- the title-page loop
+    # used to swallow it whole into metadata, silently deleting it from
+    # the script (nothing ever displays an unrecognized metadata key).
+    text = "FADE IN:\n\nINT. KITCHEN - DAY\n\nVijay stares at the kettle.\n"
+    metadata, buf = s.from_fountain(text)
+    assert metadata == {}
+    assert [l["type"] for l in buf] == ["transition", "heading", "action"]
+    assert buf[0]["text"] == "FADE IN:"
+
+
+def test_from_fountain_real_title_page_keys_still_recognized():
+    # The fix for the above must not start rejecting genuine title-page
+    # lines, including custom ones (any key the user's own
+    # cfg["prompts"]["fields"] uses, not just Title/Author).
+    text = ("Title: Beach House\nAuthor: Priya Menon\n"
+            "Draft date: 2026\n\nINT. HOUSE - DAY\n")
+    metadata, buf = s.from_fountain(text)
+    assert metadata == {"Title": "Beach House", "Author": "Priya Menon",
+                         "Draft date": "2026"}
+    assert buf[0]["type"] == "heading"
+
+
+def test_from_fountain_strips_section_headings():
+    # Section headings ("# ...") are Fountain outline syntax, never meant
+    # to be printed -- previously imported as literal, garbled ACTION
+    # text (e.g. an action line reading "# Act One").
+    text = "# Act One\n\nINT. HOUSE - DAY\n\n## A subsection\n\nHe waits.\n"
+    _, buf = s.from_fountain(text)
+    texts = [l["text"] for l in buf if l["text"]]
+    assert not any(t.startswith("#") for t in texts)
+    assert [l["type"] for l in buf if l["text"]] == ["heading", "action"]
+
+
+def test_from_fountain_strips_synopsis_lines():
+    # A single leading "=" is a Synopsis line, also never printed.
+    text = "INT. HOUSE - DAY\n\n= A quiet morning\n\nHe waits.\n"
+    _, buf = s.from_fountain(text)
+    texts = [l["text"] for l in buf if l["text"]]
+    assert "= A quiet morning" not in texts
+    assert not any(t.startswith("=") for t in texts)
+
+
+def test_from_fountain_strips_page_breaks():
+    # Three-or-more "=" on their own line is a forced page break.
+    text = "INT. HOUSE - DAY\n\nHe waits.\n\n===\n\nEXT. STREET - DAY\n"
+    _, buf = s.from_fountain(text)
+    texts = [l["text"] for l in buf]
+    assert not any(t.strip("=") == "" and t for t in texts)
+    assert [l["type"] for l in buf if l["text"]] == ["heading", "action", "heading"]
+
+
 def test_from_fountain_centered_text_is_action_not_transition():
     # "> ... <" is Fountain's centered-text syntax, not a transition -- and
     # previously the trailing "<" was left stuck onto the text verbatim.
@@ -91,6 +145,71 @@ def test_from_fountain_forced_scene_heading():
     _, buf = s.from_fountain(".FLASHBACK - THE OLD HOUSE\nShe remembers.\n")
     assert buf[0]["type"] == "heading"
     assert buf[0]["text"] == "FLASHBACK - THE OLD HOUSE"
+
+
+def test_from_fountain_forced_character_cue():
+    # "@" is Fountain's own forced-character-cue syntax, written by other
+    # apps (Highland, Slugline, Fade In, ...) for names the plain
+    # all-caps heuristic wouldn't otherwise catch. Previously nothing
+    # recognized it at all, so it fell straight through to ACTION/DIALOGUE.
+    text = "He stares at the door.\n@mccavity\nWho's there?\n"
+    _, buf = s.from_fountain(text)
+    assert [l["type"] for l in buf] == ["action", "character", "dialogue"]
+    assert buf[1]["text"] == "mccavity"  # "@" stripped, case preserved as typed
+
+
+def test_from_fountain_forced_character_cue_no_blank_line_needed():
+    # Unlike the plain all-caps heuristic (which requires a blank line
+    # before), "@" forces regardless of context -- same as "!"/">"/".".
+    text = "Line one.\nLine two.\n@JONES\nHello.\n"
+    _, buf = s.from_fountain(text)
+    assert buf[2]["type"] == "character"
+    assert buf[2]["text"] == "JONES"
+    assert buf[3]["type"] == "dialogue"
+
+
+def test_from_fountain_forced_character_cue_with_dual_marker():
+    text = "@BRICK\nScrew retirement.\n@STEEL ^\nSo do I.\n"
+    _, buf = s.from_fountain(text)
+    assert buf[0]["type"] == "character" and not buf[0].get("dual")
+    assert buf[2]["type"] == "character" and buf[2].get("dual") is True
+    assert buf[2]["text"] == "STEEL"  # "^" stripped off
+
+
+def test_to_fountain_forces_character_names_the_heuristic_would_miss():
+    # A name that's too long, or ends in punctuation, would fail
+    # from_fountain()'s plain "all-caps, <40 chars, no trailing .!?"
+    # check even after being upper-cased -- to_fountain() must write it
+    # with a "@" prefix so it round-trips as CHARACTER, not silently
+    # reclassify as ACTION/DIALOGUE on the next open. See
+    # _needs_character_force().
+    long_name = "THE PERSON WHOSE NAME NO ONE CAN EVER QUITE REMEMBER"
+    punct_name = "REALLY?"
+    buffer = [
+        {"type": "character", "text": long_name},
+        {"type": "dialogue", "text": "Line one."},
+        {"type": "character", "text": punct_name},
+        {"type": "dialogue", "text": "Line two."},
+    ]
+    text = s.to_fountain({}, buffer)
+    assert f"@{long_name}" in text
+    assert f"@{punct_name}" in text
+    _, buf2 = s.from_fountain(text)
+    assert buf2[0]["type"] == "character" and buf2[0]["text"] == long_name
+    assert buf2[2]["type"] == "character" and buf2[2]["text"] == punct_name
+
+
+def test_to_fountain_does_not_force_ordinary_character_names():
+    # A normal short all-caps name round-trips fine on its own (upper-
+    # casing already makes it match the plain heuristic) -- to_fountain()
+    # shouldn't clutter the file with an unneeded "@" on every cue.
+    buffer = [
+        {"type": "character", "text": "brick"},
+        {"type": "dialogue", "text": "Screw retirement."},
+    ]
+    text = s.to_fountain({}, buffer)
+    assert "@BRICK" not in text
+    assert "BRICK" in text
 
 
 def test_from_fountain_midparagraph_allcaps_not_treated_as_character():
@@ -667,10 +786,13 @@ def test_safe_filename_falls_back_to_untitled():
 
 
 def test_resolve_save_path_adds_fountain_extension(tmp_path):
+    # A brand-new (never-saved) script resolves into its own <Title>
+    # subfolder under save_dir -- see new_script_dir().
     ed = _make_editor(save_dir=tmp_path)
     ed.metadata = {"Title": "My Script"}
     p = ed.resolve_save_path(None)
-    assert p == tmp_path / "My_Script.fountain"
+    assert p == tmp_path / "My_Script" / "My_Script.fountain"
+    assert p.parent.is_dir()
 
 
 def test_resolve_save_path_respects_explicit_arg(tmp_path):
@@ -685,8 +807,31 @@ def test_pdf_export_path_uses_same_sanitizer_as_save(tmp_path):
     ed.metadata = {"Title": 'Weird: Title/Name'}
     ed.filepath = None
     ed.do_export_pdf(None)
-    expected = tmp_path / f"{s.Editor.safe_filename(ed.metadata['Title'])}.pdf"
+    safe_title = s.Editor.safe_filename(ed.metadata["Title"])
+    expected = tmp_path / safe_title / f"{safe_title}.pdf"
     assert expected.exists()
+
+
+def test_do_export_pdf_works_before_any_save(tmp_path):
+    # Regression: ":pdf" on a script that has never been saved (no :w/
+    # :wq yet) used to fail -- do_export_pdf()'s no-filepath fallback
+    # resolved a path under save_dir but never created the directory
+    # (unlike resolve_save_path()'s equivalent branch), so a save_dir
+    # that doesn't exist yet raised FileNotFoundError inside export_pdf(),
+    # caught and shown as "PDF export failed: ...". This only ever
+    # "worked" because a prior :wq happened to create the directory as a
+    # side effect. save_dir here is a *fresh, nonexistent* subdirectory
+    # of tmp_path -- nothing has touched it yet.
+    pytest.importorskip("reportlab")
+    save_dir = tmp_path / "brand_new_save_dir"
+    assert not save_dir.exists()
+    ed = _make_editor(save_dir=save_dir,
+                       buffer=[{"type": "action", "text": "Opening image."}])
+    ed.metadata = {"Title": "Interlude"}
+    ed.filepath = None
+    ed.do_export_pdf(None)
+    assert "failed" not in ed.status.lower()
+    assert (save_dir / "Interlude" / "Interlude.pdf").exists()
 
 
 # --------------------------------------------------------------------------
@@ -694,16 +839,25 @@ def test_pdf_export_path_uses_same_sanitizer_as_save(tmp_path):
 # --------------------------------------------------------------------------
 
 class _FakeStdscr:
-    """Minimal stand-in so Editor() can be constructed off-screen."""
+    """Minimal stand-in so Editor() can be constructed off-screen.
+
+    Also records every addstr() into a plain-text grid (styling/attrs
+    dropped) so render() output can actually be asserted on -- used by the
+    dual-dialogue two-column render tests below, which need to check
+    *where* text landed, not just that render() didn't crash.
+    """
     def __init__(self, dims=(24, 80)):
         self.last_move = None
         self.dims = dims
+        h, w = dims
+        self.grid = [[" "] * w for _ in range(h)]
 
     def getmaxyx(self):
         return self.dims
 
     def erase(self):
-        pass
+        h, w = self.dims
+        self.grid = [[" "] * w for _ in range(h)]
 
     def clear(self):
         pass
@@ -714,8 +868,16 @@ class _FakeStdscr:
     def move(self, y, x):
         self.last_move = (y, x)
 
-    def addstr(self, *a, **kw):
-        pass
+    def addstr(self, y, x, s="", attr=0, *a, **kw):
+        h, w = self.dims
+        if not (0 <= y < h):
+            return
+        for i, ch in enumerate(s):
+            if 0 <= x + i < w:
+                self.grid[y][x + i] = ch
+
+    def row(self, y):
+        return "".join(self.grid[y]).rstrip()
 
 
 def _make_editor(save_dir=None, buffer=None):
@@ -734,8 +896,12 @@ def _make_editor(save_dir=None, buffer=None):
     ed.mode = "NORMAL"
     ed.cmdline = ""
     ed.status = ""
-    ed.undo_stack = []
-    ed.redo_stack = []
+    ed.undo_root = {"buffer": copy.deepcopy(buffer), "cy": 0, "cx": 0,
+                     "parent": None, "children": [], "ts": 0.0}
+    ed.undo_current = ed.undo_root
+    ed._awaiting_new_undo_node = False
+    ed._undo_node_count = 1
+    ed.register = None
     ed.dirty = False
     ed.search_term = ""
     ed.pending_key = None
@@ -751,6 +917,10 @@ def _make_editor(save_dir=None, buffer=None):
     ed.pairs = {}
     ed.recovery_path = None
     ed.last_autosave = 0.0
+    ed.revision_color = "White"
+    ed.revision_baseline = copy.deepcopy(buffer)
+    ed.revision_history = []
+    ed._revision_marks_cache = None
     return ed
 
 
@@ -855,16 +1025,35 @@ def test_redo_with_empty_stack_is_a_safe_noop():
 
 
 def test_new_edit_after_undo_clears_redo_history():
+    # Name kept for continuity with the old flat-stack test, but this now
+    # asserts the *fixed* behavior: a fresh edit made after undo()ing no
+    # longer destroys the branch it undid past -- it becomes a new
+    # sibling, and the old branch stays reachable via :undotree. Plain
+    # redo() still follows the newest edit by default, same feel as
+    # before.
     ed = _make_editor(buffer=[
         {"type": "action", "text": "one"},
         {"type": "action", "text": "two"},
     ])
     ed.handle_normal(ord("d"))
     ed.handle_normal(ord("d"))
+    assert len(ed.buffer) == 1
     ed.undo()
-    assert ed.redo_stack  # something to redo right after undo
-    ed.handle_normal(ord("x"))  # a fresh edit
-    assert ed.redo_stack == []
+    assert [l["text"] for l in ed.buffer] == ["one", "two"]
+    old_future = ed.undo_current["children"][0]  # the "dd" edit we just undid
+    ed.handle_normal(ord("x"))  # a fresh, different edit (delete-char)
+    # The new edit is a sibling of the old one, not a replacement for it.
+    assert old_future in ed.undo_current["parent"]["children"]
+    assert len(ed.undo_current["parent"]["children"]) == 2
+    # Plain redo() still follows the *new* edit by default...
+    ed.undo()
+    ed.redo()
+    assert ed.buffer[0]["text"] == "ne"  # the "x" edit, not the old "dd" one
+    # ...but the abandoned "dd" branch is still there for :undotree to
+    # reach -- not silently gone.
+    leaves = ed._undo_leaves()
+    assert old_future in leaves or any(
+        old_future is n for n in leaves)
 
 
 def test_ctrl_r_triggers_redo():
@@ -877,6 +1066,102 @@ def test_ctrl_r_triggers_redo():
     ed.undo()
     ed.handle_normal(18)  # Ctrl-R
     assert [l["text"] for l in ed.buffer] == ["two"]
+
+
+# --------------------------------------------------------------------------
+# Yank / paste
+# --------------------------------------------------------------------------
+
+def test_yy_yanks_current_line_into_register():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "two"},
+    ])
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("y"))
+    assert ed.register == {"type": "character", "text": "VIJAY"}
+    # unchanged -- yy is read-only
+    assert [l["text"] for l in ed.buffer] == ["VIJAY", "two"]
+
+
+def test_pending_y_does_not_survive_unrelated_keys():
+    ed = _make_editor(buffer=[{"type": "action", "text": "one"}])
+    ed.handle_normal(ord("y"))     # arm pending "y"
+    ed.handle_normal(ord("j"))     # unrelated
+    ed.handle_normal(ord("y"))     # fresh single "y" -- must NOT yank
+    assert ed.register is None
+
+
+def test_p_pastes_yanked_line_below_cursor():
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": "one"},
+        {"type": "action", "text": "two"},
+    ])
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("p"))
+    assert [l["text"] for l in ed.buffer] == ["one", "one", "two"]
+    assert ed.cy == 1
+
+
+def test_shift_p_pastes_yanked_line_above_cursor():
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": "one"},
+        {"type": "action", "text": "two"},
+    ])
+    ed.cy = 1
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("P"))
+    assert [l["text"] for l in ed.buffer] == ["one", "two", "two"]
+    assert ed.cy == 1
+
+
+def test_paste_with_empty_register_is_a_safe_noop():
+    ed = _make_editor(buffer=[{"type": "action", "text": "one"}])
+    ed.handle_normal(ord("p"))
+    assert [l["text"] for l in ed.buffer] == ["one"]
+    assert "Nothing" in ed.status
+
+
+def test_pasted_line_is_an_independent_copy_not_a_shared_reference():
+    ed = _make_editor(buffer=[{"type": "action", "text": "one"}])
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("p"))
+    ed.buffer[0]["text"] = "changed"
+    assert ed.buffer[1]["text"] == "one"  # paste didn't alias the original
+
+
+def test_dd_cuts_line_into_register_so_it_can_be_pasted_back():
+    ed = _make_editor(buffer=[
+        {"type": "action", "text": "one"},
+        {"type": "action", "text": "two"},
+    ])
+    ed.handle_normal(ord("d"))
+    ed.handle_normal(ord("d"))
+    assert [l["text"] for l in ed.buffer] == ["two"]
+    ed.handle_normal(ord("p"))
+    assert [l["text"] for l in ed.buffer] == ["two", "one"]
+
+
+def test_paste_is_undoable():
+    ed = _make_editor(buffer=[{"type": "action", "text": "one"}])
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("y"))
+    ed.handle_normal(ord("p"))
+    assert len(ed.buffer) == 2
+    ed.undo()
+    assert [l["text"] for l in ed.buffer] == ["one"]
+
+
+def test_paste_blocked_in_readonly():
+    ed = _make_editor(buffer=[{"type": "action", "text": "one"}])
+    ed.readonly = True
+    ed.register = {"type": "action", "text": "yanked"}
+    ed.handle_normal(ord("p"))
+    assert [l["text"] for l in ed.buffer] == ["one"]
+    assert "Read-only" in ed.status
 
 
 # --------------------------------------------------------------------------
@@ -995,7 +1280,7 @@ def test_recovery_key_for_path_is_stable_and_filesystem_safe(tmp_path):
 
 
 def test_maybe_autosave_writes_recovery_file_when_dirty(tmp_path, monkeypatch):
-    monkeypatch.setattr(s, "RECOVERY_DIR", tmp_path / "recovery")
+    monkeypatch.setattr(s.config, "RECOVERY_DIR", tmp_path / "recovery")
     ed = _make_editor(buffer=[{"type": "action", "text": "hello"}])
     ed.recovery_path = tmp_path / "recovery" / "test.swp"
     ed.dirty = True
@@ -1007,7 +1292,7 @@ def test_maybe_autosave_writes_recovery_file_when_dirty(tmp_path, monkeypatch):
 
 
 def test_maybe_autosave_skips_when_not_dirty(tmp_path, monkeypatch):
-    monkeypatch.setattr(s, "RECOVERY_DIR", tmp_path / "recovery")
+    monkeypatch.setattr(s.config, "RECOVERY_DIR", tmp_path / "recovery")
     ed = _make_editor(buffer=[{"type": "action", "text": "hello"}])
     ed.recovery_path = tmp_path / "recovery" / "test.swp"
     ed.dirty = False
@@ -1724,33 +2009,42 @@ def test_save_uses_atomic_write(tmp_path):
                        buffer=[{"type": "action", "text": "final draft text"}])
     ed.metadata = {"Title": "MyScript"}
     ed.save()
-    saved = tmp_path / "MyScript.fountain"
+    saved = tmp_path / "MyScript" / "MyScript.fountain"
     assert saved.exists()
     assert "final draft text" in saved.read_text()
     assert list(tmp_path.glob(".*.tmp*")) == []
+    assert list((tmp_path / "MyScript").glob(".*.tmp*")) == []
 
 
 # --------------------------------------------------------------------------
 # save_dir default / migration
 # --------------------------------------------------------------------------
 
-def test_default_save_dir_is_documents_scriptee():
-    expected = str(Path.home() / "Documents" / "Scriptee")
+def test_default_save_dir_is_documents_scripts():
+    expected = str(Path.home() / "Documents" / "Scripts")
     assert s.DEFAULT_CONFIG["general"]["save_dir"] == expected
+
+
+def test_load_config_migrates_old_documents_scriptee_default(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[general]\nsave_dir = "~/Documents/Scriptee"\n')
+    monkeypatch.setattr(s.config, "CONFIG_PATH", config_path)
+    cfg = s.load_config()
+    assert cfg["general"]["save_dir"] == str(Path.home() / "Documents" / "Scripts")
 
 
 def test_load_config_migrates_old_bare_documents_default(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text('[general]\nsave_dir = "~/Documents"\n')
-    monkeypatch.setattr(s, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(s.config, "CONFIG_PATH", config_path)
     cfg = s.load_config()
-    assert cfg["general"]["save_dir"] == str(Path.home() / "Documents" / "Scriptee")
+    assert cfg["general"]["save_dir"] == str(Path.home() / "Documents" / "Scripts")
 
 
 def test_load_config_leaves_customized_save_dir_alone(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text('[general]\nsave_dir = "~/Scripts/WIP"\n')
-    monkeypatch.setattr(s, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(s.config, "CONFIG_PATH", config_path)
     cfg = s.load_config()
     assert cfg["general"]["save_dir"] == "~/Scripts/WIP"
 
@@ -1945,6 +2239,109 @@ def test_rename_command_bad_arg_count_shows_usage_with_quoting_hint():
     ed.execute_command("rename VIJAY")
     assert "Usage: :rename" in ed.status
     assert "quote" in ed.status.lower()
+
+
+# --------------------------------------------------------------------------
+# Character rename sweep -- "--all" prose sweep
+# --------------------------------------------------------------------------
+
+def test_rename_without_all_flag_leaves_prose_mentions_untouched():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay opens the door."},
+    ])
+    ed.rename_character("vijay", "sriram")
+    assert ed.buffer[0]["text"] == "SRIRAM"
+    assert ed.buffer[1]["text"] == "Vijay opens the door."
+
+
+def test_rename_with_include_prose_sweeps_action_and_dialogue():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay opens the door."},
+        {"type": "dialogue", "text": "Where is VIJAY?"},
+        {"type": "parenthetical", "text": "(to Vijay)"},
+    ])
+    ed.rename_character("vijay", "sriram", include_prose=True)
+    assert ed.buffer[0]["text"] == "SRIRAM"
+    assert ed.buffer[1]["text"] == "Sriram opens the door."
+    assert ed.buffer[2]["text"] == "Where is SRIRAM?"
+    # parenthetical isn't in the default search_in list -- left alone
+    assert ed.buffer[3]["text"] == "(to Vijay)"
+
+
+def test_rename_prose_sweep_preserves_case_pattern_per_match():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "VIJAY nods. Vijay smiles. Then vijay leaves."},
+    ])
+    ed.rename_character("vijay", "sriram", include_prose=True)
+    assert (ed.buffer[1]["text"] ==
+            "SRIRAM nods. Sriram smiles. Then sriram leaves.")
+
+
+def test_rename_prose_sweep_only_matches_whole_words():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "AL"},
+        {"type": "action", "text": "AL waves. He is always alert."},
+    ])
+    ed.rename_character("al", "raj", include_prose=True)
+    assert ed.buffer[1]["text"] == "RAJ waves. He is always alert."
+
+
+def test_rename_prose_sweep_counted_separately_in_status():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay waits. Vijay leaves."},
+    ])
+    ed.rename_character("vijay", "sriram", include_prose=True)
+    assert "1 cue" in ed.status
+    assert "2 prose" in ed.status
+
+
+def test_rename_include_prose_with_no_matches_anywhere():
+    ed = _make_editor(buffer=[{"type": "action", "text": "Nobody is here."}])
+    ed.rename_character("ghost", "spirit", include_prose=True)
+    assert ed.buffer[0]["text"] == "Nobody is here."
+    assert "No CHARACTER cues" in ed.status
+
+
+def test_rename_command_all_flag_end_to_end():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay opens the door."},
+    ])
+    ed.execute_command("rename VIJAY SRIRAM --all")
+    assert ed.buffer[0]["text"] == "SRIRAM"
+    assert ed.buffer[1]["text"] == "Sriram opens the door."
+
+
+def test_rename_command_short_flag_variant():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay opens the door."},
+    ])
+    ed.execute_command("rename VIJAY SRIRAM -a")
+    assert ed.buffer[1]["text"] == "Sriram opens the door."
+
+
+def test_rename_command_all_flag_with_quoted_multiword_names():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "OLD MAN"},
+        {"type": "action", "text": "The Old Man shuffles forward."},
+    ])
+    ed.execute_command('rename "OLD MAN" "YOUNG MAN" --all')
+    assert ed.buffer[0]["text"] == "YOUNG MAN"
+    assert ed.buffer[1]["text"] == "The Young Man shuffles forward."
+
+
+def test_rename_command_without_all_flag_still_defaults_to_cues_only():
+    ed = _make_editor(buffer=[
+        {"type": "character", "text": "VIJAY"},
+        {"type": "action", "text": "Vijay opens the door."},
+    ])
+    ed.execute_command("rename VIJAY SRIRAM")
+    assert ed.buffer[1]["text"] == "Vijay opens the door."
 
 
 # --------------------------------------------------------------------------
@@ -2627,10 +3024,10 @@ def test_do_export_pdf_reads_scene_numbers_from_config(tmp_path, monkeypatch):
     ed.cfg["general"]["pdf_scene_numbers"] = False
     seen = {}
 
-    def fake_export_pdf(path, metadata, buffer, scene_numbers=True, cover_page=True):
+    def fake_export_pdf(path, metadata, buffer, scene_numbers=True, cover_page=True, **kw):
         seen["scene_numbers"] = scene_numbers
 
-    monkeypatch.setattr(s, "export_pdf", fake_export_pdf)
+    monkeypatch.setattr(s.editor, "export_pdf", fake_export_pdf)
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["scene_numbers"] is False
 
@@ -2666,8 +3063,8 @@ def test_export_pdf_prompts_for_titlepage_when_metadata_empty(tmp_path, monkeypa
     ed.stdscr = _FakeWChStdscr(_queued_field_answers(*answers))
     monkeypatch.setattr(curses, "curs_set", lambda n: None)
     seen = {}
-    monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+    monkeypatch.setattr(s.editor, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True, **kw:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {"Title": "My Script", "Author": "Wmans"}
@@ -2682,8 +3079,8 @@ def test_export_pdf_skips_prompt_when_metadata_already_present(tmp_path, monkeyp
     ed.metadata = {"Title": "Already Has A Cover"}
     ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire
     seen = {}
-    monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+    monkeypatch.setattr(s.editor, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True, **kw:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {"Title": "Already Has A Cover"}
@@ -2699,8 +3096,8 @@ def test_export_pdf_declining_prompt_exports_with_no_titlepage(tmp_path, monkeyp
         _queued_field_answers(*([""] * len(ed.cfg["prompts"]["fields"]))))
     monkeypatch.setattr(curses, "curs_set", lambda n: None)
     seen = {}
-    monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+    monkeypatch.setattr(s.editor, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True, **kw:
                              seen.update(metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["metadata"] == {}
@@ -2714,7 +3111,7 @@ def test_export_pdf_only_prompts_once_per_session(tmp_path, monkeypatch):
     ed.stdscr = _FakeWChStdscr(
         _queued_field_answers(*([""] * len(ed.cfg["prompts"]["fields"]))))
     monkeypatch.setattr(curses, "curs_set", lambda n: None)
-    monkeypatch.setattr(s, "export_pdf", lambda *a, **k: None)
+    monkeypatch.setattr(s.editor, "export_pdf", lambda *a, **k: None)
     ed.do_export_pdf(str(tmp_path / "out1.pdf"))
     assert ed._title_prompt_shown is True
     # Second export in the same session: metadata is still {} (declined
@@ -2729,7 +3126,7 @@ def test_export_pdf_prompt_disabled_via_config(tmp_path, monkeypatch):
     ])
     ed.cfg["general"]["prompt_missing_titlepage"] = False
     ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire
-    monkeypatch.setattr(s, "export_pdf", lambda *a, **k: None)
+    monkeypatch.setattr(s.editor, "export_pdf", lambda *a, **k: None)
     ed.do_export_pdf(str(tmp_path / "out.pdf"))  # must not raise/hang
     assert ed.metadata == {}
 
@@ -2746,8 +3143,8 @@ def test_cover_page_disabled_skips_prompt_and_passes_false_through(tmp_path, mon
     ed.cfg["general"]["cover_page"] = False
     ed.stdscr = _FakeStdscr()  # no get_wch queued -- prompt must not fire
     seen = {}
-    monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+    monkeypatch.setattr(s.editor, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True, **kw:
                              seen.update(cover_page=cover_page))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["cover_page"] is False
@@ -2760,8 +3157,8 @@ def test_cover_page_disabled_even_with_metadata_present(tmp_path, monkeypatch):
     ed.metadata = {"Title": "Has Metadata"}
     ed.cfg["general"]["cover_page"] = False
     seen = {}
-    monkeypatch.setattr(s, "export_pdf",
-                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True:
+    monkeypatch.setattr(s.editor, "export_pdf",
+                         lambda path, metadata, buffer, scene_numbers=True, cover_page=True, **kw:
                              seen.update(cover_page=cover_page, metadata=dict(metadata)))
     ed.do_export_pdf(str(tmp_path / "out.pdf"))
     assert seen["cover_page"] is False
@@ -2804,7 +3201,7 @@ def test_cover_command_prefills_existing_metadata(tmp_path, monkeypatch):
         seen_initial["initial"] = dict(initial or {})
         return dict(initial or {})  # simulate accepting every prefilled value as-is
 
-    monkeypatch.setattr(s, "new_file_metadata", fake_new_file_metadata)
+    monkeypatch.setattr(s.editor, "new_file_metadata", fake_new_file_metadata)
     ed.stdscr = _FakeStdscr()
     ed.do_cover_prompt()
     assert seen_initial["initial"] == {"Title": "Old Title", "Author": "Wmans"}
@@ -2815,7 +3212,7 @@ def test_cover_command_prefills_existing_metadata(tmp_path, monkeypatch):
 def test_cover_command_updates_metadata_and_marks_dirty(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     ed.metadata = {"Title": "Old Title"}
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None:
                              {"Title": "New Title"})
     ed.stdscr = _FakeStdscr()
@@ -2828,7 +3225,7 @@ def test_cover_command_updates_metadata_and_marks_dirty(tmp_path, monkeypatch):
 def test_cover_command_can_clear_metadata_entirely(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     ed.metadata = {"Title": "Old Title"}
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None: {})
     ed.stdscr = _FakeStdscr()
     ed.do_cover_prompt()
@@ -2840,7 +3237,7 @@ def test_cover_command_can_clear_metadata_entirely(tmp_path, monkeypatch):
 def test_cover_command_resets_title_prompt_shown_every_call(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     ed._title_prompt_shown = True  # e.g. already declined once via :pdf
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None: {})
     ed.stdscr = _FakeStdscr()
     ed.do_cover_prompt()
@@ -2851,7 +3248,7 @@ def test_cover_command_runs_every_time_unlike_pdfs_one_shot(tmp_path, monkeypatc
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     calls = []
     monkeypatch.setattr(
-        s, "new_file_metadata",
+        s.editor, "new_file_metadata",
         lambda stdscr, cfg, heading=None, initial=None: calls.append(1) or {})
     ed.stdscr = _FakeStdscr()
     ed.do_cover_prompt()
@@ -2862,7 +3259,7 @@ def test_cover_command_runs_every_time_unlike_pdfs_one_shot(tmp_path, monkeypatc
 
 def test_cover_command_via_execute_command_returns_to_editor(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None:
                              {"Title": "Via Command"})
     ed.stdscr = _FakeStdscr()
@@ -2874,7 +3271,7 @@ def test_cover_command_via_execute_command_returns_to_editor(tmp_path, monkeypat
 def test_cover_command_status_notes_when_cover_page_disabled(tmp_path, monkeypatch):
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     ed.cfg["general"]["cover_page"] = False
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None:
                              {"Title": "Saved Anyway"})
     ed.stdscr = _FakeStdscr()
@@ -2890,7 +3287,7 @@ def test_cover_command_allowed_in_readonly(tmp_path, monkeypatch):
     # the same reasoning.
     ed = _make_editor(save_dir=tmp_path, buffer=[{"type": "action", "text": "hi"}])
     ed.readonly = True
-    monkeypatch.setattr(s, "new_file_metadata",
+    monkeypatch.setattr(s.editor, "new_file_metadata",
                          lambda stdscr, cfg, heading=None, initial=None:
                              {"Title": "Still Works"})
     ed.stdscr = _FakeStdscr()
@@ -3154,6 +3551,7 @@ def test_keybind_redo_ctrl_follows_configured_letter():
     ed.cfg["keybinds"]["redo"] = "y"  # Ctrl-y instead of the default Ctrl-r
     ed.snapshot()
     ed.buffer[0]["text"] = "typed"
+    ed.touch()  # real edit call sites always follow snapshot()+mutate with touch()
     ed.undo()
     assert ed.buffer[0]["text"] == ""
     ctrl_y = ord("Y") & 0x1f
@@ -3166,7 +3564,14 @@ def test_max_undo_steps_is_configurable():
     ed.cfg["behavior"]["max_undo_steps"] = 3
     for i in range(10):
         ed.snapshot()
-    assert len(ed.undo_stack) == 3
+        ed.buffer[0]["text"] = str(i)
+        ed.touch()
+    # A straight (non-branching) run of edits beyond the cap gets pruned
+    # from the far end -- see _prune_undo_tree(). A tree with active
+    # branches is exempt from this cap (preserving branches is the whole
+    # point of the undo tree), but plain linear history like this still
+    # respects it.
+    assert ed._undo_node_count == 3
 
 
 def test_type_for_key_only_matches_line_type_setters():
@@ -3206,10 +3611,10 @@ def test_apply_runtime_config_updates_wrap_width():
 
 def test_apply_runtime_config_recomputes_pdf_rows_per_page():
     cfg = copy.deepcopy(s.DEFAULT_CONFIG)
-    default_rows = s.PDF_ROWS_PER_PAGE
+    default_rows = s.pdf_geometry.PDF_ROWS_PER_PAGE
     cfg["format"]["pdf"]["top_margin_in"] = 3.0  # much less usable height
     s.apply_runtime_config(cfg)
-    assert s.PDF_ROWS_PER_PAGE < default_rows
+    assert s.pdf_geometry.PDF_ROWS_PER_PAGE < default_rows
 
 
 def test_apply_runtime_config_updates_autosave_and_recent_files():
@@ -3217,8 +3622,8 @@ def test_apply_runtime_config_updates_autosave_and_recent_files():
     cfg["behavior"]["autosave_interval_secs"] = 999
     cfg["behavior"]["max_recent_files"] = 2
     s.apply_runtime_config(cfg)
-    assert s.AUTOSAVE_INTERVAL == 999
-    assert s.MAX_RECENT_FILES == 2
+    assert s.config.AUTOSAVE_INTERVAL == 999
+    assert s.config.MAX_RECENT_FILES == 2
 
 
 # --------------------------------------------------------------------------
@@ -3233,10 +3638,10 @@ def _reportlab_test_font_dir():
 def test_pdf_font_defaults_to_courier():
     cfg = copy.deepcopy(s.DEFAULT_CONFIG)
     s.apply_runtime_config(cfg)
-    assert s.PDF_FONT == "Courier"
-    assert s.PDF_FONT_BOLD == "Courier-Bold"
-    assert s.PDF_FONT_ITALIC == "Courier-Oblique"
-    assert s.PDF_FONT_WARNING == ""
+    assert s.pdf_geometry.PDF_FONT == "Courier"
+    assert s.pdf_geometry.PDF_FONT_BOLD == "Courier-Bold"
+    assert s.pdf_geometry.PDF_FONT_ITALIC == "Courier-Oblique"
+    assert s.pdf_geometry.PDF_FONT_WARNING == ""
 
 
 def test_pdf_font_custom_registers_ttf():
@@ -3250,10 +3655,10 @@ def test_pdf_font_custom_registers_ttf():
     }
     s.apply_runtime_config(cfg)
     try:
-        assert s.PDF_FONT == "ScripteeCustom"
-        assert s.PDF_FONT_BOLD == "ScripteeCustom-Bold"
-        assert s.PDF_FONT_ITALIC == "ScripteeCustom-Italic"
-        assert s.PDF_FONT_WARNING == ""
+        assert s.pdf_geometry.PDF_FONT == "ScripteeCustom"
+        assert s.pdf_geometry.PDF_FONT_BOLD == "ScripteeCustom-Bold"
+        assert s.pdf_geometry.PDF_FONT_ITALIC == "ScripteeCustom-Italic"
+        assert s.pdf_geometry.PDF_FONT_WARNING == ""
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))  # reset globals
 
@@ -3265,10 +3670,10 @@ def test_pdf_font_custom_falls_back_without_bold_italic():
     cfg["format"]["pdf"]["custom_font"] = {"regular": str(fonts / "Vera.ttf")}
     s.apply_runtime_config(cfg)
     try:
-        assert s.PDF_FONT == "ScripteeCustom"
+        assert s.pdf_geometry.PDF_FONT == "ScripteeCustom"
         # No distinct bold/italic given -- both fall back to the regular face.
-        assert s.PDF_FONT_BOLD == "ScripteeCustom"
-        assert s.PDF_FONT_ITALIC == "ScripteeCustom"
+        assert s.pdf_geometry.PDF_FONT_BOLD == "ScripteeCustom"
+        assert s.pdf_geometry.PDF_FONT_ITALIC == "ScripteeCustom"
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))
 
@@ -3279,10 +3684,10 @@ def test_pdf_font_custom_missing_path_falls_back_to_courier_with_warning():
     cfg["format"]["pdf"]["custom_font"] = {"regular": "/nonexistent/font.ttf"}
     s.apply_runtime_config(cfg)
     try:
-        assert s.PDF_FONT == "Courier"
-        assert s.PDF_FONT_BOLD == "Courier-Bold"
-        assert s.PDF_FONT_ITALIC == "Courier-Oblique"
-        assert "custom_font.regular" in s.PDF_FONT_WARNING
+        assert s.pdf_geometry.PDF_FONT == "Courier"
+        assert s.pdf_geometry.PDF_FONT_BOLD == "Courier-Bold"
+        assert s.pdf_geometry.PDF_FONT_ITALIC == "Courier-Oblique"
+        assert "custom_font.regular" in s.pdf_geometry.PDF_FONT_WARNING
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))
 
@@ -3292,8 +3697,8 @@ def test_pdf_font_custom_blank_regular_falls_back_to_courier_with_warning():
     cfg["format"]["pdf"]["font_family"] = "custom"
     s.apply_runtime_config(cfg)  # custom_font.regular left at its "" default
     try:
-        assert s.PDF_FONT == "Courier"
-        assert s.PDF_FONT_WARNING != ""
+        assert s.pdf_geometry.PDF_FONT == "Courier"
+        assert s.pdf_geometry.PDF_FONT_WARNING != ""
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))
 
@@ -3340,10 +3745,10 @@ def _pdf_basefonts_used(pdf_path):
 
 
 def test_pdf_emphasis_defaults_to_true():
-    assert s.PDF_HEADING_BOLD is True
-    assert s.PDF_CHARACTER_BOLD is True
-    assert s.PDF_TRANSITION_BOLD is True
-    assert s.PDF_PAREN_ITALIC is True
+    assert s.pdf_geometry.PDF_HEADING_BOLD is True
+    assert s.pdf_geometry.PDF_CHARACTER_BOLD is True
+    assert s.pdf_geometry.PDF_TRANSITION_BOLD is True
+    assert s.pdf_geometry.PDF_PAREN_ITALIC is True
 
 
 def test_pdf_emphasis_flags_read_from_config():
@@ -3356,10 +3761,10 @@ def test_pdf_emphasis_flags_read_from_config():
     }
     s.apply_runtime_config(cfg)
     try:
-        assert s.PDF_HEADING_BOLD is False
-        assert s.PDF_CHARACTER_BOLD is False
-        assert s.PDF_TRANSITION_BOLD is False
-        assert s.PDF_PAREN_ITALIC is False
+        assert s.pdf_geometry.PDF_HEADING_BOLD is False
+        assert s.pdf_geometry.PDF_CHARACTER_BOLD is False
+        assert s.pdf_geometry.PDF_TRANSITION_BOLD is False
+        assert s.pdf_geometry.PDF_PAREN_ITALIC is False
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))
 
@@ -3371,10 +3776,10 @@ def test_pdf_emphasis_partial_config_falls_back_to_defaults():
     cfg["format"]["pdf"]["emphasis"] = {"character_bold": False}
     s.apply_runtime_config(cfg)
     try:
-        assert s.PDF_CHARACTER_BOLD is False
-        assert s.PDF_HEADING_BOLD is True
-        assert s.PDF_TRANSITION_BOLD is True
-        assert s.PDF_PAREN_ITALIC is True
+        assert s.pdf_geometry.PDF_CHARACTER_BOLD is False
+        assert s.pdf_geometry.PDF_HEADING_BOLD is True
+        assert s.pdf_geometry.PDF_TRANSITION_BOLD is True
+        assert s.pdf_geometry.PDF_PAREN_ITALIC is True
     finally:
         s.apply_runtime_config(copy.deepcopy(s.DEFAULT_CONFIG))
 
@@ -3586,6 +3991,69 @@ def test_find_dual_pair_none_when_second_cue_not_marked_dual():
     assert s.find_dual_pair(buffer, 0) is None
 
 
+def test_render_dual_dialogue_draws_two_side_by_side_columns():
+    """render() should lay a dual-dialogue pair out as two real columns --
+    both cues' text on the same screen row, second column strictly to the
+    right of the first -- not the old stacked-single-column placeholder."""
+    buffer = [
+        {"type": "character", "text": "BRICK"},
+        {"type": "dialogue", "text": "Screw retirement."},
+        {"type": "character", "text": "STEEL", "dual": True},
+        {"type": "dialogue", "text": "So do I."},
+        {"type": "action", "text": "They stare at each other."},
+    ]
+    ed = _make_editor(buffer=buffer)
+    ed.cy = 0
+    s.Editor.render(ed)
+    cue_row = ed.stdscr.row(0)
+    assert "BRICK" in cue_row and "STEEL" in cue_row
+    assert cue_row.index("BRICK") < cue_row.index("STEEL")
+    dialogue_row = ed.stdscr.row(1)
+    assert "Screw retirement." in dialogue_row and "So do I." in dialogue_row
+    assert dialogue_row.index("Screw retirement.") < dialogue_row.index("So do I.")
+    # The action line after the pair should render right after it, on its
+    # own single-column row -- confirms the main loop's index correctly
+    # skipped past the whole pair rather than re-walking it line by line.
+    assert "They stare at each other." in ed.stdscr.row(2)
+
+
+def test_render_dual_dialogue_cursor_tracks_second_column():
+    """The terminal cursor should land inside the second column when self.cy
+    is on the second cue's dialogue, not wherever the first column's rows
+    happened to end."""
+    buffer = [
+        {"type": "character", "text": "BRICK"},
+        {"type": "dialogue", "text": "Screw retirement."},
+        {"type": "character", "text": "STEEL", "dual": True},
+        {"type": "dialogue", "text": "So do I."},
+    ]
+    ed = _make_editor(buffer=buffer)
+    ed.cy, ed.cx = 3, 0  # start of "So do I."
+    s.Editor.render(ed)
+    cursor_y, cursor_x = ed.stdscr.last_move
+    row = ed.stdscr.row(cursor_y)
+    assert "So do I." in row
+    # cursor_x should fall at or before "So do I."'s own position, not
+    # inside/after BRICK's column.
+    assert cursor_x <= row.index("So do I.") + 1
+
+
+def test_render_no_dual_pair_falls_back_to_single_column():
+    """A lone CHARACTER cue (no pairing) must still render the ordinary
+    single-column way -- the dual-block path should only fire when
+    find_dual_pair() actually finds a pair."""
+    buffer = [
+        {"type": "character", "text": "BRICK"},
+        {"type": "dialogue", "text": "Nobody's pairing with me."},
+    ]
+    ed = _make_editor(buffer=buffer)
+    ed.cy = 0
+    s.Editor.render(ed)  # should not raise
+    joined = "\n".join(ed.stdscr.row(y) for y in range(4))
+    assert "BRICK" in joined
+    assert "Nobody's pairing with me." in joined
+
+
 def test_export_pdf_dual_dialogue_smoke(tmp_path):
     """Doesn't assert on drawn pixel positions (out of reach without a PDF
     renderer), but proves a dual-dialogue buffer exports without error and
@@ -3619,3 +4087,78 @@ def test_paginate_buffer_treats_dual_pair_as_one_block():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------
+# :help rendering -- rows are flattened into real screen lines before
+# scrolling/paging, so a wrapped multi-line description can never make a
+# later entry's row overlap/overwrite it. See Editor._flatten_help_rows().
+# --------------------------------------------------------------------------
+
+def test_flatten_help_rows_gives_wrapped_lines_their_own_row():
+    rows = [
+        ("A", "one two three four five six seven eight nine ten"),
+        ("B", "short"),
+    ]
+    flat = s.Editor._flatten_help_rows(rows, 10)  # narrow -> "A" must wrap
+    cmd_rows = [i for i, (k, _l, _d) in enumerate(flat) if k == "cmd"]
+    # One flat "cmd" row per help entry -- never one per wrapped line.
+    assert len(cmd_rows) == 2
+    a_row, b_row = cmd_rows
+    # Every row between A's own row and B's own row must be a "cont" row
+    # holding one of A's wrapped continuation lines. This is exactly what
+    # the old `y = 2 + i` scheme never allocated at all -- it advanced
+    # straight from A's slot to B's, so B (and everything after it) got
+    # drawn on top of lines A's own wrap loop had just written.
+    between = flat[a_row + 1: b_row]
+    assert len(between) >= 1
+    assert all(k == "cont" for k, _l, _d in between)
+    assert flat[b_row][1] == "B"
+
+
+def test_flatten_help_rows_preserves_headers_and_blank_spacers():
+    # Mirrors help_text()'s actual row shapes: a section header is
+    # (label, None); a blank spacer is ("", None) -- desc is None either
+    # way, so both take the "header" branch (an empty-text header row
+    # draws nothing, same as a blank line); only (label, "text") rows
+    # become "cmd" rows.
+    rows = [("SECTION", None), ("", None), ("cmd", "desc")]
+    flat = s.Editor._flatten_help_rows(rows, 40)
+    assert [k for k, _l, _d in flat] == ["header", "header", "cmd"]
+    assert flat[1][1] == ""
+
+
+def test_help_text_flattens_and_scrolls_without_row_collisions():
+    # End-to-end sanity check against the real help_text() content (not a
+    # synthetic table): every entry that isn't a blank spacer must occupy
+    # a distinct row when flattened at a realistically narrow width, where
+    # several entries are known to wrap across multiple lines.
+    ed = _make_editor()
+    rows = ed.help_text()
+    flat = ed._flatten_help_rows(rows, 30)
+    assert len(flat) >= len(rows)  # wrapping only ever adds rows, never merges
+    # No two non-blank rows can carry the same left-column label at
+    # different positions unless flattening is broken (labels are unique
+    # per command in help_text()).
+    labels = [left for k, left, _d in flat if k == "cmd"]
+    assert len(labels) == len(set(labels))
+
+
+def test_show_help_scrolls_to_bottom_without_crashing_or_dropping_last_entry():
+    # Drives the real show_help() loop (not just the flatten helper) at a
+    # narrow, short fake terminal that forces both wrapping and paging,
+    # scrolling all the way to the bottom with 'j' then quitting with 'q'.
+    # Must not crash, and the very last flattened row must actually reach
+    # the screen once scrolled into view -- confirming the loop's own
+    # top/body_h bounds line up with the flattened row count.
+    ed = _make_editor()
+    ed.stdscr = _FakeWChStdscr([])  # dims default to (24, 80)
+    rows = ed.help_text()
+    flat = ed._flatten_help_rows(rows, ed.stdscr.dims[1] - 26)
+    keys = [ord("j")] * (len(flat) + 5) + [ord("q")]
+    ed.stdscr._queue = keys
+    ed.pairs = {}
+    ed.show_help()  # must return normally, not raise
+    last_cmd = next((left for k, left, _d in reversed(flat) if k == "cmd"), None)
+    assert last_cmd is not None
+    assert any(last_cmd in ed.stdscr.row(y) for y in range(ed.stdscr.dims[0]))
