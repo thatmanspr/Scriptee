@@ -126,6 +126,8 @@ Standard vim motions (remappable — see [Config](#config-reference)):
 | Key | Action |
 |---|---|
 | `h` `j` `k` `l` | left / down / up / right |
+| `^` | jump to the first word of the line (skips leading blanks) |
+| `$` | jump to the last character of the line |
 | `i` | insert before cursor |
 | `a` | insert after cursor |
 | `o` | open a new line below, insert |
@@ -143,6 +145,14 @@ straight to the next element. On a wrapped ACTION/DIALOGUE line, moving
 down from the first row lands on the line's second row at the same
 column, not on the next element — only from the last row does down
 cross into the next element. Up mirrors this.
+
+`^` and `$` mirror vim: `^` lands on the first non-blank character (the
+start of the first *word*), not necessarily column 0, and falls back to
+column 0 on a blank/whitespace-only line; `$` lands *on* the last
+character, not one column past it (that "past the end" slot is where
+`a` moves you, for appending). Plain `0` isn't bound to "start of line"
+the way vim binds it, since digits are already used as a count prefix
+for `G` (e.g. `12G` jumps to scene 12).
 
 `N` is the odd one out next to `o`/`O`: it opens a blank ACTION line
 below the cursor (moving you onto it) but leaves you in NORMAL instead
@@ -689,7 +699,7 @@ Every key Scriptee reads is remappable: the 7 line-type letters
 (`heading`/`action`/`character`/`dialogue`/`parenthetical`/`shot`/`transition`)
 plus bare NORMAL-mode keys — `insert_before`/`insert_after`/
 `open_below`/`open_above`/`blank_line`, `move_left`/`move_down`/`move_up`/
-`move_right`, `delete_char`/`delete_line`, `yank_line`/`paste_after`/
+`move_right`, `line_start`/`line_end`, `delete_char`/`delete_line`, `yank_line`/`paste_after`/
 `paste_before`, `undo`/`redo` (redo is held with Ctrl automatically,
 e.g. `r` → `Ctrl-r`), `search`/`next_match`, `command`, `repeat`,
 `jump_end`, `toggle_readonly`, `dual_dialogue`. `:help` always reflects
