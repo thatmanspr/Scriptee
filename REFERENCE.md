@@ -19,6 +19,7 @@ see [`README.md`](README.md).
 - [`:dual` — dual (simultaneous) dialogue](#dual--dual-simultaneous-dialogue)
 - [`:version` — numbered drafts of a script](#version--numbered-drafts-of-a-script)
 - [`:scenes` / `:stats` / jumping around](#scenes--stats--jumping-around)
+- [`:flag` / `:flags` — scene flags](#flag--flags--scene-flags)
 - [`.` — repeat the last command](#--repeat-the-last-command)
 - [Saving, quitting, opening](#saving-quitting-opening)
 - [`:pdf` / `:cover` — PDF export](#pdf--cover--pdf-export)
@@ -375,6 +376,44 @@ similarly-named standalone files sitting loose in the same directory.
 | `<N>G` | Same as `:scene N`, from NORMAL mode — e.g. `12G` jumps to scene 12 |
 | `G` | Jump to the last line (no count prefix) |
 | `:42` | Jump to line 42 |
+
+## `:flag` / `:flags` — scene flags
+
+Lightweight bookmarks for scenes that need another pass — a beat that
+doesn't land yet, a line to double-check, a note to yourself before a
+table read. Each flag can carry an optional comment, and every flag gets
+a number of its own (shown in `:flags`, separate from the scene number
+it points at).
+
+| Command | Does |
+|---|---|
+| `:flag` | Flag the scene the cursor is currently in. |
+| `:flag N` | Flag scene `N` instead. |
+| `:flag <comment>` | Flag the current scene with a note, e.g. `:flag tighten this exchange`. |
+| `:flag N <comment>` | Flag scene `N` with a note, e.g. `:flag 4 too on-the-nose`. |
+| `:flags` | Open the flag list — `j`/`k` move, `Enter` jumps to that flag's scene, `d` deletes it, `q`/`Esc` closes. |
+| `:flags N` | Jump straight to flag `N`'s scene, without opening the list — same split as `:scene N` vs `:scenes`. |
+| `:unflag` | Remove the flag on the current scene, if it has one. |
+| `:unflag N` | Remove flag number `N` (the number `:flags` shows it as — not scene `N`). |
+
+Flagging an already-flagged scene again replaces its comment rather than
+creating a second entry, so `:flag 4 note` is safe to run more than
+once. Flags are numbered by scene order (the earliest-flagged scene in
+the script is always flag 1), so that numbering can shift as flags are
+added or removed elsewhere in the list — same spirit as scene numbers
+themselves, which are positional, not fixed IDs.
+
+Flags live in a small sidecar file next to the script's autosave slot
+(not inside the `.fountain` file itself), so a flagged script stays a
+plain, portable Fountain file that opens the same in any other tool.
+Because flags are keyed by scene *number* at the moment they were set,
+inserting or deleting a scene above a flagged one can shift what that
+number now points at — jumping to a flag whose scene heading no longer
+matches what was recorded says so explicitly (`scene may have shifted
+since this was flagged`) rather than silently landing on the wrong
+scene. Branching a script with `:version new` carries its flags into the
+new version; a scene flagged before the script's first `:w` is kept
+through that first save as well.
 
 ## `.` — repeat the last command
 
@@ -768,6 +807,8 @@ a checkout also still works, same as before.
 | `pdf_export.py` | Row drawing, pagination, `:pdf`/`:cover`/sides export |
 | `ui_helpers.py` | Low-level curses helpers (key reading, prompts) |
 | `screens.py` | Start menu, recovery prompt, open-file picker |
+| `versions.py` | File-based numbered draft branching (`:version`) |
+| `flags.py` | Scene-flag sidecar storage (`:flag`/`:flags`) |
 | `editor.py` | The `Editor` class — the main edit loop and all `:commands` |
 | `app.py` | Startup flow and `main()` |
 
@@ -823,6 +864,12 @@ package split didn't add runtime weight; if anything it trimmed some.
   one 40+ chars long or ending in `.`/`!`/`?`), so a foreign file that
   uses those is read correctly even where the plain heuristics
   wouldn't catch it.
+- Scene flags (see [`:flag` / `:flags`](#flag--flags--scene-flags)) are
+  keyed by scene *number*, which is positional, not a stable ID —
+  inserting or removing a scene above a flagged one shifts what number
+  that flag now points at. Jumping to a drifted flag says so rather than
+  landing silently on the wrong scene, but it doesn't try to re-locate
+  the original scene automatically.
 - No spellcheck, no cloud sync/collaboration, and Final Draft's `.fdx`
   isn't read or written — only `.fountain`. To hand a script to someone
   on Final Draft, export to PDF, or have them import the `.fountain`
